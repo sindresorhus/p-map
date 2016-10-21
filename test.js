@@ -16,7 +16,7 @@ const mapper = ([val, ms]) => delay(ms).then(() => val);
 test('main', async t => {
 	const end = timeSpan();
 	t.deepEqual(await m(input, mapper), [10, 20, 30]);
-	t.true(inRange(end(), 290, 320));
+	t.true(inRange(end(), 290, 700));
 });
 
 test('concurrency: 1', async t => {
