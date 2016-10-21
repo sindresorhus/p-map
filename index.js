@@ -1,49 +1,34 @@
 'use strict';
 module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
-	const input = Array.from(iterable);
-
-	if (input.length === 0) {
-		resolve([]);
-		return;
-	}
-
 	opts = Object.assign({
-		concurrency: Infinity
+		concurrency: 1
 	}, opts);
 
-	let concurrency = opts.concurrency;
-
-	if (concurrency === Infinity || concurrency > input.length) {
-		concurrency = input.length;
-	}
+	const concurrency = opts.concurrency;
 
 	if (!(Number.isFinite(concurrency) && concurrency >= 1)) {
 		throw new TypeError('Expected `concurrency` to be a finite number from 1 and up');
 	}
 
-	const ret = new Array(input.length);
+	const ret = [];
+	const iterator = iterable[Symbol.iterator]();
 	let isRejected = false;
-	let doneCount = 0;
 
 	const next = i => {
 		if (isRejected) {
 			return;
 		}
 
-		if (doneCount === input.length) {
+		const nextItem = iterator.next();
+		if (nextItem.done) {
 			resolve(ret);
 			return;
 		}
 
-		if (i >= input.length) {
-			return;
-		}
-
-		Promise.resolve(input[i])
+		Promise.resolve(nextItem.value)
 			.then(el => mapper(el, i))
 			.then(
 				val => {
-					doneCount++;
 					ret[i] = val;
 					next(i + concurrency);
 				},
