@@ -59,17 +59,20 @@ Type: `Object`
 ##### concurrency
 
 Type: `number`<br>
-Default: `Infinity`
+Default: `Infinity`<br>
+Minimum: `1`
 
-Number of concurrent pending promises.
+Number of concurrently pending promises returned by `mapper`.
 
 
 ## Related
 
 - [p-all](https://github.com/sindresorhus/p-all) - Run promise-returning & async functions concurrently with optional limited concurrency
 - [p-filter](https://github.com/sindresorhus/p-filter) - Filter promises concurrently
+- [p-times](https://github.com/sindresorhus/p-times) - Run promise-returning & async functions a specific number of times concurrently
 - [p-props](https://github.com/sindresorhus/p-props) - Like `Promise.all()` but for `Map` and `Object`
 - [p-map-series](https://github.com/sindresorhus/p-map-series) - Map over promises serially
+- [p-queue](https://github.com/sindresorhus/p-queue) - Promise queue with concurrency control
 - [More…](https://github.com/sindresorhus/promise-fun)
 
 
