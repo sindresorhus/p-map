@@ -12,28 +12,35 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 
 	const ret = [];
 	const iterator = iterable[Symbol.iterator]();
-	let isRejected = false;
+	let isSettled = false;
+	let resolvingCount = 0;
 
 	const next = i => {
-		if (isRejected) {
+		if (isSettled) {
 			return;
 		}
 
 		const nextItem = iterator.next();
 		if (nextItem.done) {
-			resolve(ret);
+			if (resolvingCount === 0) {
+				isSettled = true;
+				resolve(ret);
+			}
+
 			return;
 		}
 
+		resolvingCount++;
 		Promise.resolve(nextItem.value)
 			.then(el => mapper(el, i))
 			.then(
 				val => {
 					ret[i] = val;
+					resolvingCount--;
 					next(i + concurrency);
 				},
 				err => {
-					isRejected = true;
+					isSettled = true;
 					reject(err);
 				}
 			);

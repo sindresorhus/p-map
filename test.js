@@ -16,7 +16,14 @@ const mapper = ([val, ms]) => delay(ms).then(() => val);
 test('main', async t => {
 	const end = timeSpan();
 	t.deepEqual(await m(input, mapper), [10, 20, 30]);
-	t.true(inRange(end(), 290, 700));
+	t.true(inRange(end(), 590, 650));
+});
+
+test('wait all promises to settle', async t => {
+	const end = timeSpan();
+	const result = await m(input, mapper, {concurrency: 3});
+	t.deepEqual(result, [10, 20, 30]);
+	t.true(inRange(end(), 290, 320));
 });
 
 test('concurrency: 1', async t => {
