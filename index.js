@@ -1,29 +1,31 @@
 'use strict';
 module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 	opts = Object.assign({
-		concurrency: 1
+		concurrency: Infinity
 	}, opts);
 
 	const concurrency = opts.concurrency;
 
-	if (!(Number.isFinite(concurrency) && concurrency >= 1)) {
-		throw new TypeError('Expected `concurrency` to be a finite number from 1 and up');
+	if (concurrency < 1) {
+		throw new TypeError('Expected `concurrency` to be a number from 1 upto Infinity');
 	}
 
 	const ret = [];
 	const iterator = iterable[Symbol.iterator]();
-	let isSettled = false;
+	let isRejected = false;
+	let iterableDone = false;
 	let resolvingCount = 0;
 
 	const next = i => {
-		if (isSettled) {
+		if (isRejected) {
 			return;
 		}
 
 		const nextItem = iterator.next();
+
 		if (nextItem.done) {
+			iterableDone = true;
 			if (resolvingCount === 0) {
-				isSettled = true;
 				resolve(ret);
 			}
 
@@ -40,7 +42,7 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 					next(i + concurrency);
 				},
 				err => {
-					isSettled = true;
+					isRejected = true;
 					reject(err);
 				}
 			);
@@ -48,5 +50,8 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 
 	for (let i = 0; i < concurrency; i++) {
 		next(i);
+		if (iterableDone) {
+			break;
+		}
 	}
 });
