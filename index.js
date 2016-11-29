@@ -59,7 +59,7 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 	}
 });
 
-module.exports.liftFn = function(mapper, options) {
+module.exports.thunk = function(mapper, options) {
 	return function(input){
 		module.exports(input, mapper, options);
 	};
