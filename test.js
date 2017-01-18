@@ -54,3 +54,10 @@ test('async with concurrency: 2 (problematic time sequence)', async t => {
 	const result = await m(input, mapper, {concurrency: 2});
 	t.deepEqual(result, input);
 });
+
+test('async with concurrency: 2 (out of order time sequence)', async t => {
+	const input = [200, 100, 50];
+	const mapper = value => delay(value).then(() => value);
+	const result = await m(input, mapper, {concurrency: 2});
+	t.deepEqual(result, input);
+});
