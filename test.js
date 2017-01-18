@@ -16,13 +16,13 @@ const mapper = ([val, ms]) => delay(ms).then(() => val);
 test('main', async t => {
 	const end = timeSpan();
 	t.deepEqual(await m(input, mapper), [10, 20, 30]);
-	t.true(inRange(end(), 290, 330));
+	t.true(inRange(end(), 290, 430));
 });
 
 test('concurrency: 1', async t => {
 	const end = timeSpan();
 	t.deepEqual(await m(input, mapper, {concurrency: 1}), [10, 20, 30]);
-	t.true(inRange(end(), 590, 660));
+	t.true(inRange(end(), 590, 760));
 });
 
 test('concurrency: 4', async t => {
@@ -42,12 +42,8 @@ test('handles empty iterable', async t => {
 });
 
 test('async with concurrency: 2', async t => {
-	const myInput = [100, 200, 10, 36, 13, 45];
-	const myMapper = value => {
-		return new Promise(resolve => {
-			setTimeout(() => resolve(value), value);
-		});
-	};
-	const result = await m(myInput, myMapper, {concurrency: 2});
-	t.deepEqual(result, myInput);
+	const input = Array(10).map(() => randomInt(0, 100));
+	const mapper = value => delay(value).then(() => value);
+	const result = await m(input, mapper, {concurrency: 2});
+	t.deepEqual(result, input);
 });
