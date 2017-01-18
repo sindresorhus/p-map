@@ -41,8 +41,15 @@ test('handles empty iterable', async t => {
 	t.deepEqual(await m([], mapper), []);
 });
 
-test('async with concurrency: 2', async t => {
+test('async with concurrency: 2 (random time sequence)', async t => {
 	const input = Array(10).map(() => randomInt(0, 100));
+	const mapper = value => delay(value).then(() => value);
+	const result = await m(input, mapper, {concurrency: 2});
+	t.deepEqual(result, input);
+});
+
+test('async with concurrency: 2 (problematic time sequence)', async t => {
+	const input = [100, 200, 10, 36, 13, 45];
 	const mapper = value => delay(value).then(() => value);
 	const result = await m(input, mapper, {concurrency: 2});
 	t.deepEqual(result, input);
