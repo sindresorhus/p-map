@@ -15,13 +15,16 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 	let isRejected = false;
 	let iterableDone = false;
 	let resolvingCount = 0;
+	let currentIdx = 0;
 
-	const next = i => {
+	const next = () => {
 		if (isRejected) {
 			return;
 		}
 
 		const nextItem = iterator.next();
+		const i = currentIdx;
+		currentIdx++;
 
 		if (nextItem.done) {
 			iterableDone = true;
@@ -41,7 +44,7 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 				val => {
 					ret[i] = val;
 					resolvingCount--;
-					next(i + concurrency);
+					next();
 				},
 				err => {
 					isRejected = true;
@@ -51,7 +54,7 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 	};
 
 	for (let i = 0; i < concurrency; i++) {
-		next(i);
+		next();
 
 		if (iterableDone) {
 			break;
