@@ -40,3 +40,14 @@ test('concurrency: 4', async t => {
 test('handles empty iterable', async t => {
 	t.deepEqual(await m([], mapper), []);
 });
+
+test('async with concurrency: 2', async t => {
+	const myInput = [100, 200, 10, 36, 13, 45];
+	const myMapper = value => {
+		return new Promise(resolve => {
+			setTimeout(() => resolve(value), value);
+		});
+	};
+	const result = await m(myInput, myMapper, {concurrency: 2});
+	t.deepEqual(result, myInput);
+});
