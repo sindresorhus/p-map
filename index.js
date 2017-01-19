@@ -61,3 +61,9 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 		}
 	}
 });
+
+module.exports.thunk = function(mapper, options) {
+	return function(input){
+		module.exports(input, mapper, options);
+	};
+}
