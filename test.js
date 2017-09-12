@@ -61,3 +61,11 @@ test('async with concurrency: 2 (out of order time sequence)', async t => {
 	const result = await m(input, mapper, {concurrency: 2});
 	t.deepEqual(result, input);
 });
+
+test('enforce number in options.concurrency', async t => {
+	await t.throws(m([], () => {}, {concurrency: 0}), TypeError);
+	await t.throws(m([], () => {}, {concurrency: undefined}), TypeError);
+	await t.notThrows(m([], () => {}, {concurrency: 1}));
+	await t.notThrows(m([], () => {}, {concurrency: 10}));
+	await t.notThrows(m([], () => {}, {concurrency: Infinity}));
+});
