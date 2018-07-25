@@ -48,8 +48,10 @@ const sites = [
 	'github.com'
 ];
 const run = async () => {
-	const mapper = el => got.head(el).then(res => res.requestUrl);
-
+	const mapper = async (el) => {
+		const { requestUrl } = await got.head(el);
+		return requestUrl;
+	};
  	const result = await pMap(sites, mapper, {concurrency: 2});
 	console.log(result);
 	//=> ['http://sindresorhus.com/', 'http://ava.li/', 'http://todomvc.com/', 'http://github.com/']
