@@ -3,7 +3,7 @@ import delay from 'delay';
 import inRange from 'in-range';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
-import m from './';
+import m from '.';
 
 const input = [
 	Promise.resolve([10, 300]),
@@ -29,7 +29,7 @@ test('concurrency: 4', async t => {
 	const concurrency = 4;
 	let running = 0;
 
-	await m(Array(100).fill(0), async () => {
+	await m(new Array(100).fill(0), async () => {
 		running++;
 		t.true(running <= concurrency);
 		await delay(randomInt(30, 200));
@@ -42,7 +42,7 @@ test('handles empty iterable', async t => {
 });
 
 test('async with concurrency: 2 (random time sequence)', async t => {
-	const input = Array(10).map(() => randomInt(0, 100));
+	const input = new Array(10).map(() => randomInt(0, 100));
 	const mapper = value => delay(value).then(() => value);
 	const result = await m(input, mapper, {concurrency: 2});
 	t.deepEqual(result, input);

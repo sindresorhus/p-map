@@ -1,14 +1,14 @@
 'use strict';
-module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
-	opts = Object.assign({
+module.exports = (iterable, mapper, options) => new Promise((resolve, reject) => {
+	options = Object.assign({
 		concurrency: Infinity
-	}, opts);
+	}, options);
 
 	if (typeof mapper !== 'function') {
 		throw new TypeError('Mapper function is required');
 	}
 
-	const concurrency = opts.concurrency;
+	const {concurrency} = options;
 
 	if (!(typeof concurrency === 'number' && concurrency >= 1)) {
 		throw new TypeError(`Expected \`concurrency\` to be a number from 1 and up, got \`${concurrency}\` (${typeof concurrency})`);
@@ -17,9 +17,9 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 	const ret = [];
 	const iterator = iterable[Symbol.iterator]();
 	let isRejected = false;
-	let iterableDone = false;
+	let isIterableDone = false;
 	let resolvingCount = 0;
-	let currentIdx = 0;
+	let currentIndex = 0;
 
 	const next = () => {
 		if (isRejected) {
@@ -27,11 +27,11 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 		}
 
 		const nextItem = iterator.next();
-		const i = currentIdx;
-		currentIdx++;
+		const i = currentIndex;
+		currentIndex++;
 
 		if (nextItem.done) {
-			iterableDone = true;
+			isIterableDone = true;
 
 			if (resolvingCount === 0) {
 				resolve(ret);
@@ -43,16 +43,16 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 		resolvingCount++;
 
 		Promise.resolve(nextItem.value)
-			.then(el => mapper(el, i))
+			.then(element => mapper(element, i))
 			.then(
-				val => {
-					ret[i] = val;
+				value => {
+					ret[i] = value;
 					resolvingCount--;
 					next();
 				},
-				err => {
+				error => {
 					isRejected = true;
-					reject(err);
+					reject(error);
 				}
 			);
 	};
@@ -60,7 +60,7 @@ module.exports = (iterable, mapper, opts) => new Promise((resolve, reject) => {
 	for (let i = 0; i < concurrency; i++) {
 		next();
 
-		if (iterableDone) {
+		if (isIterableDone) {
 			break;
 		}
 	}
