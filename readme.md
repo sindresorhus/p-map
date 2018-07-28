@@ -14,6 +14,8 @@ $ npm install p-map
 
 ## Usage
 
+### Promises
+
 ```js
 const pMap = require('p-map');
 const got = require('got');
@@ -33,6 +35,30 @@ pMap(sites, mapper, {concurrency: 2}).then(result => {
 });
 ```
 
+### Async/Await
+
+```js
+const pMap = require('p-map');
+const got = require('got');
+
+const sites = [
+	getWebsiteFromUsername('sindresorhus'), //=> Promise
+	'ava.li',
+	'todomvc.com',
+	'github.com'
+];
+const run = async () => {
+	const mapper = async (el) => {
+		const { requestUrl } = await got.head(el);
+		return requestUrl;
+	};
+ 	const result = await pMap(sites, mapper, {concurrency: 2});
+	console.log(result);
+	//=> ['http://sindresorhus.com/', 'http://ava.li/', 'http://todomvc.com/', 'http://github.com/']
+};
+
+run();
+```
 
 ## API
 
