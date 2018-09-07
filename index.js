@@ -1,4 +1,5 @@
 'use strict';
+
 const pMap = (iterable, mapper, options) => new Promise((resolve, reject) => {
 	options = Object.assign({
 		concurrency: Infinity
