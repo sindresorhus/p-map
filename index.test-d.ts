@@ -13,8 +13,8 @@ const numbers = [
 	2
 ];
 
-const asyncMapper = async (site: string) => Promise.resolve(site);
-const asyncSyncMapper = async (site: string, index: number) => index > 1 ? site : Promise.resolve(site);
+const asyncMapper = async (site: string) => site;
+const asyncSyncMapper = (site: string, index: number) => index > 1 ? site : Promise.resolve(site);
 const multiResultTypeMapper = (site: string, index: number) => index > 1 ? site.length : site;
 
 expectType<string[]>(await pMap(sites, asyncMapper));

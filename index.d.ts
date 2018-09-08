@@ -4,7 +4,7 @@ interface Options {
 	 *
 	 * @default Infinity
 	 */
-	concurrency: number;
+	concurrency?: number;
 }
 
 type Mapper<T, U> = (input: T, index: number) => U | Promise<U>
@@ -14,7 +14,7 @@ type Mapper<T, U> = (input: T, index: number) => U | Promise<U>
  *
  * @param input - Iterated over concurrently in the `mapper` function.
  * @param mapper - Function which is called for every item in `input`. Expected to return a `Promise` or value.
- * @param options - Options object.
+ * @param options - Options-object.
  *
  * @example
  *
@@ -30,7 +30,7 @@ type Mapper<T, U> = (input: T, index: number) => U | Promise<U>
  * 	};
  *
  * 	const result = await pMap(sites, mapper, {concurrency: 2});
- * 	//=> [http://ava.li/', 'http://todomvc.com/']
+ * 	//=> ['http://ava.li/', 'http://todomvc.com/']
  * })();
  */
 export default function <T, U>(input: Iterable<T>, mapper: Mapper<T, U>, options?: Options): Promise<U[]>;
