@@ -1,5 +1,5 @@
 import {expectType} from 'tsd-check';
-import pMap from '.';
+import pMap, {Options, Mapper} from '.';
 
 const sites = [
 	'ava.li',
@@ -16,6 +16,13 @@ const numbers = [
 const asyncMapper = async (site: string) => site;
 const asyncSyncMapper = (site: string, index: number) => index > 1 ? site : Promise.resolve(site);
 const multiResultTypeMapper = (site: string, index: number) => index > 1 ? site.length : site;
+
+expectType<Mapper>(asyncMapper);
+expectType<Mapper>(asyncSyncMapper);
+expectType<Mapper>(multiResultTypeMapper);
+
+expectType<Options>({});
+expectType<Options>({concurrency: 0});
 
 expectType<string[]>(await pMap(sites, asyncMapper));
 expectType<string[]>(await pMap(sites, asyncMapper, {concurrency: 2}));
