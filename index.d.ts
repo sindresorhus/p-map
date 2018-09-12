@@ -33,4 +33,4 @@ type Mapper<T, U> = (input: T, index: number) => U | Promise<U>
  * 	//=> ['http://ava.li/', 'http://todomvc.com/']
  * })();
  */
-export default function <T, U>(input: Iterable<T>, mapper: Mapper<T, U>, options?: Options): Promise<U[]>;
+export default function <Element, NewElement>(input: Iterable<Element>, mapper: Mapper<Element, NewElement>, options?: Options): Promise<NewElement[]>;
