@@ -18,8 +18,11 @@ const asyncSyncMapper = (site: string, index: number) => index > 1 ? site : Prom
 const multiResultTypeMapper = (site: string, index: number) => index > 1 ? site.length : site;
 
 expectType<Mapper>(asyncMapper);
+expectType<Mapper<string, string>>(asyncMapper);
 expectType<Mapper>(asyncSyncMapper);
+expectType<Mapper<string, string | Promise<string>>>(asyncSyncMapper);
 expectType<Mapper>(multiResultTypeMapper);
+expectType<Mapper<string, string | number>>(multiResultTypeMapper);
 
 expectType<Options>({});
 expectType<Options>({concurrency: 0});
