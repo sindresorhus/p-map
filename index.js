@@ -1,5 +1,6 @@
 'use strict';
-module.exports = (iterable, mapper, options) => new Promise((resolve, reject) => {
+
+const pMap = (iterable, mapper, options) => new Promise((resolve, reject) => {
 	options = Object.assign({
 		concurrency: Infinity
 	}, options);
@@ -65,3 +66,6 @@ module.exports = (iterable, mapper, options) => new Promise((resolve, reject) =>
 		}
 	}
 });
+
+module.exports = pMap;
+module.exports.default = pMap;
