@@ -21,6 +21,7 @@ expectType<Mapper<string, string | number>>(multiResultTypeMapper);
 
 expectType<Options>({});
 expectType<Options>({concurrency: 0});
+expectType<Options>({aggregateError: true});
 
 expectType<Promise<string[]>>(pMap(sites, asyncMapper));
 expectType<Promise<string[]>>(pMap(sites, asyncMapper, {concurrency: 2}));

@@ -6,6 +6,13 @@ declare namespace pMap {
 		@default Infinity
 		*/
 		concurrency?: number;
+
+		/**
+		 * Throw an aggregate error at the end when all promise are settled.
+		 *
+		 * @default false
+		 */
+		aggregateError?: boolean;
 	}
 
 	/**

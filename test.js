@@ -4,11 +4,19 @@ import inRange from 'in-range';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
 import pMap from '.';
+import AggregateError from 'aggregate-error';
 
 const input = [
 	Promise.resolve([10, 300]),
 	[20, 200],
 	[30, 100]
+];
+
+const errorInput = [
+	[20, 200],
+	[30, 100],
+	Promise.reject(new Error('foo')),
+	Promise.reject(new Error('bar'))
 ];
 
 const mapper = ([value, ms]) => delay(ms, {value});
@@ -68,4 +76,8 @@ test('enforce number in options.concurrency', async t => {
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: 1}));
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: 10}));
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: Infinity}));
+});
+
+test('aggregate error', async t => {
+	await t.throwsAsync(m(errorInput, mapper, {concurrency: 1, aggregateError: true}), AggregateError);
 });
