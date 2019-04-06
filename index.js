@@ -68,4 +68,5 @@ const pMap = (iterable, mapper, options) => new Promise((resolve, reject) => {
 });
 
 module.exports = pMap;
+// TODO: Remove this for the next major release
 module.exports.default = pMap;
