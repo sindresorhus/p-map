@@ -40,13 +40,13 @@ const sites = [
 
 ## API
 
-### pMap(input, mapper, [options])
+### pMap(input, mapper, options?)
 
 Returns a `Promise` that is fulfilled when all promises in `input` and ones returned from `mapper` are fulfilled, or rejects if any of the promises reject. The fulfilled value is an `Array` of the fulfilled values returned from `mapper` in `input` order.
 
 #### input
 
-Type: `Iterable<Promise|any>`
+Type: `Iterable<Promise | unknown>`
 
 Iterated over concurrently in the `mapper` function.
 
@@ -58,7 +58,7 @@ Expected to return a `Promise` or value.
 
 #### options
 
-Type: `Object`
+Type: `object`
 
 ##### concurrency
 
@@ -80,6 +80,14 @@ Number of concurrently pending promises returned by `mapper`.
 - [More…](https://github.com/sindresorhus/promise-fun)
 
 
-## License
+---
 
-MIT © [Sindre Sorhus](https://sindresorhus.com)
+<div align="center">
+	<b>
+		<a href="https://tidelift.com/subscription/pkg/npm-p-map?utm_source=npm-p-map&utm_medium=referral&utm_campaign=readme">Get professional support for this package with a Tidelift subscription</a>
+	</b>
+	<br>
+	<sub>
+		Tidelift helps make open source sustainable for maintainers while giving companies<br>assurances about security, maintenance, and licensing for their dependencies.
+	</sub>
+</div>
