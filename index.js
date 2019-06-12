@@ -4,14 +4,14 @@ const AggregateError = require('aggregate-error');
 const pMap = (iterable, mapper, options) => new Promise((resolve, reject) => {
 	options = Object.assign({
 		concurrency: Infinity,
-		aggregateError: false
+		aggregateErrorsWhenDone: false
 	}, options);
 
 	if (typeof mapper !== 'function') {
 		throw new TypeError('Mapper function is required');
 	}
 
-	const {concurrency, aggregateError} = options;
+	const {concurrency, aggregateErrorsWhenDone} = options;
 
 	if (!(typeof concurrency === 'number' && concurrency >= 1)) {
 		throw new TypeError(`Expected \`concurrency\` to be a number from 1 and up, got \`${concurrency}\` (${typeof concurrency})`);
@@ -38,7 +38,7 @@ const pMap = (iterable, mapper, options) => new Promise((resolve, reject) => {
 			isIterableDone = true;
 
 			if (resolvingCount === 0) {
-				if (aggregateError && errors) {
+				if (aggregateErrorsWhenDone && errors.length !== 0) {
 					reject(new AggregateError(errors));
 				} else {
 					resolve(ret);
@@ -59,7 +59,7 @@ const pMap = (iterable, mapper, options) => new Promise((resolve, reject) => {
 					next();
 				},
 				error => {
-					if (aggregateError) {
+					if (aggregateErrorsWhenDone) {
 						errors.push(error);
 						resolvingCount--;
 						next();

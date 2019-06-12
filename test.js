@@ -3,8 +3,8 @@ import delay from 'delay';
 import inRange from 'in-range';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
-import pMap from '.';
 import AggregateError from 'aggregate-error';
+import pMap from '.';
 
 const input = [
 	Promise.resolve([10, 300]),
@@ -78,6 +78,8 @@ test('enforce number in options.concurrency', async t => {
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: Infinity}));
 });
 
-test('aggregate error', async t => {
-	await t.throwsAsync(m(errorInput, mapper, {concurrency: 1, aggregateError: true}), AggregateError);
+test('aggregate errors', async t => {
+	await t.notThrowsAsync(pMap(input, mapper, {concurrency: 1, aggregateErrorsWhenDone: true}));
+	await t.throwsAsync(pMap(errorInput, mapper, {concurrency: 1, aggregateErrorsWhenDone: true}), {instanceOf: AggregateError, message: /foo/});
+	await t.throwsAsync(pMap(errorInput, mapper, {concurrency: 1, aggregateErrorsWhenDone: true}), {instanceOf: AggregateError, message: /bar/});
 });
