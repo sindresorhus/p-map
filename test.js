@@ -12,11 +12,18 @@ const input = [
 	[30, 100]
 ];
 
-const errorInput = [
+const errorInput1 = [
 	[20, 200],
 	[30, 100],
 	Promise.reject(new Error('foo')),
 	Promise.reject(new Error('bar'))
+];
+
+const errorInput2 = [
+	[20, 200],
+	Promise.reject(new Error('bar')),
+	[30, 100],
+	Promise.reject(new Error('foo'))
 ];
 
 const mapper = ([value, ms]) => delay(ms, {value});
@@ -78,8 +85,13 @@ test('enforce number in options.concurrency', async t => {
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: Infinity}));
 });
 
-test('aggregate errors', async t => {
-	await t.notThrowsAsync(pMap(input, mapper, {concurrency: 1, aggregateErrorsWhenDone: true}));
-	await t.throwsAsync(pMap(errorInput, mapper, {concurrency: 1, aggregateErrorsWhenDone: true}), {instanceOf: AggregateError, message: /foo/});
-	await t.throwsAsync(pMap(errorInput, mapper, {concurrency: 1, aggregateErrorsWhenDone: true}), {instanceOf: AggregateError, message: /bar/});
+test('immediately rejects when stopOnError is true', async t => {
+	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1}), 'foo');
+	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1}), 'bar');
+});
+
+test('aggregate errors when stopOnError is false', async t => {
+	await t.notThrowsAsync(pMap(input, mapper, {concurrency: 1, stopOnError: false}));
+	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /foo(.|\n)*bar/});
+	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /bar(.|\n)*foo/});
 });

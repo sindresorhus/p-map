@@ -68,12 +68,12 @@ Minimum: `1`
 
 Number of concurrently pending promises returned by `mapper`.
 
-##### aggregateErrorsWhenDone
+##### stopOnError
 
 Type: `boolean`<br>
-Default: `false`<br>
+Default: `true`<br>
 
-If set to true, instead of stop on the first promise reject, wait for all promise and rejects with an [aggregated error](https://github.com/sindresorhus/aggregate-error) from all the rejects if there are any.
+If set to false, instead of stop on the first promise reject, wait for all promise and rejects with an [aggregated error](https://github.com/sindresorhus/aggregate-error) from all the rejects if there are any.
 
 
 ## Related

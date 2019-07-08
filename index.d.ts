@@ -8,11 +8,11 @@ declare namespace pMap {
 		concurrency?: number;
 
 		/**
-		If set to true, instead of stop on the first promise reject, wait for all promises and reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) from all the rejects if there are any.
+		If set to false, instead of stop on the first promise reject, wait for all promises and reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) from all the rejects if there are any.
 
-		@default false
+		@default true
 		*/
-		aggregateErrorsWhenDone?: boolean;
+		stopOnError?: boolean;
 	}
 
 	/**
