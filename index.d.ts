@@ -6,6 +6,13 @@ declare namespace pMap {
 		@default Infinity
 		*/
 		concurrency?: number;
+
+		/**
+		When set to `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
+
+		@default true
+		*/
+		stopOnError?: boolean;
 	}
 
 	/**

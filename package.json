@@ -37,6 +37,9 @@
 		"parallel",
 		"bluebird"
 	],
+	"dependencies": {
+		"aggregate-error": "^2.0.0"
+	},
 	"devDependencies": {
 		"ava": "^1.4.1",
 		"delay": "^4.1.0",
