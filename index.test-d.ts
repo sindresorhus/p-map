@@ -2,9 +2,17 @@ import {expectType} from 'tsd';
 import pMap = require('.');
 import {Options, Mapper} from '.';
 
-const sites = ['ava.li', 'todomvc.com', 'github.com'];
+const sites = [
+	'https://sindresorhus.com',
+	'https://ava.li',
+	'https://github.com'
+];
 
-const numbers = [0, 1, 2];
+const numbers = [
+	0,
+	1,
+	2
+];
 
 const asyncMapper = async (site: string) => site;
 const asyncSyncMapper = (site: string, index: number) =>

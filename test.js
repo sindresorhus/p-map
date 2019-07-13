@@ -31,13 +31,13 @@ const mapper = ([value, ms]) => delay(ms, {value});
 test('main', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(input, mapper), [10, 20, 30]);
-	t.true(inRange(end(), 290, 430));
+	t.true(inRange(end(), {start: 290, end: 430}));
 });
 
 test('concurrency: 1', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(input, mapper, {concurrency: 1}), [10, 20, 30]);
-	t.true(inRange(end(), 590, 760));
+	t.true(inRange(end(), {start: 590, end: 760}));
 });
 
 test('concurrency: 4', async t => {
@@ -79,7 +79,6 @@ test('async with concurrency: 2 (out of order time sequence)', async t => {
 
 test('enforce number in options.concurrency', async t => {
 	await t.throwsAsync(pMap([], () => {}, {concurrency: 0}), TypeError);
-	await t.throwsAsync(pMap([], () => {}, {concurrency: undefined}), TypeError);
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: 1}));
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: 10}));
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: Infinity}));

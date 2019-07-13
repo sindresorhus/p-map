@@ -1,64 +1,63 @@
 'use strict';
 const AggregateError = require('aggregate-error');
 
-const pMap = (iterable, mapper, options) => new Promise((resolve, reject) => {
-	options = Object.assign({
-		concurrency: Infinity,
-		stopOnError: true
-	}, options);
-
-	if (typeof mapper !== 'function') {
-		throw new TypeError('Mapper function is required');
-	}
-
-	const {concurrency, stopOnError} = options;
-
-	if (!(typeof concurrency === 'number' && concurrency >= 1)) {
-		throw new TypeError(`Expected \`concurrency\` to be a number from 1 and up, got \`${concurrency}\` (${typeof concurrency})`);
-	}
-
-	const ret = [];
-	const errors = [];
-	const iterator = iterable[Symbol.iterator]();
-	let isRejected = false;
-	let isIterableDone = false;
-	let resolvingCount = 0;
-	let currentIndex = 0;
-
-	const next = () => {
-		if (isRejected) {
-			return;
+module.exports = async (
+	iterable,
+	mapper,
+	{
+		concurrency = Infinity,
+		stopOnError = true
+	} = {}
+) => {
+	return new Promise((resolve, reject) => {
+		if (typeof mapper !== 'function') {
+			throw new TypeError('Mapper function is required');
 		}
 
-		const nextItem = iterator.next();
-		const i = currentIndex;
-		currentIndex++;
+		if (!(typeof concurrency === 'number' && concurrency >= 1)) {
+			throw new TypeError(`Expected \`concurrency\` to be a number from 1 and up, got \`${concurrency}\` (${typeof concurrency})`);
+		}
 
-		if (nextItem.done) {
-			isIterableDone = true;
+		const ret = [];
+		const errors = [];
+		const iterator = iterable[Symbol.iterator]();
+		let isRejected = false;
+		let isIterableDone = false;
+		let resolvingCount = 0;
+		let currentIndex = 0;
 
-			if (resolvingCount === 0) {
-				if (!stopOnError && errors.length !== 0) {
-					reject(new AggregateError(errors));
-				} else {
-					resolve(ret);
-				}
+		const next = () => {
+			if (isRejected) {
+				return;
 			}
 
-			return;
-		}
+			const nextItem = iterator.next();
+			const i = currentIndex;
+			currentIndex++;
 
-		resolvingCount++;
+			if (nextItem.done) {
+				isIterableDone = true;
 
-		Promise.resolve(nextItem.value)
-			.then(element => mapper(element, i))
-			.then(
-				value => {
-					ret[i] = value;
+				if (resolvingCount === 0) {
+					if (!stopOnError && errors.length !== 0) {
+						reject(new AggregateError(errors));
+					} else {
+						resolve(ret);
+					}
+				}
+
+				return;
+			}
+
+			resolvingCount++;
+
+			(async () => {
+				try {
+					const element = await nextItem.value;
+					ret[i] = await mapper(element, i);
 					resolvingCount--;
 					next();
-				},
-				error => {
+				} catch (error) {
 					if (stopOnError) {
 						isRejected = true;
 						reject(error);
@@ -68,18 +67,15 @@ const pMap = (iterable, mapper, options) => new Promise((resolve, reject) => {
 						next();
 					}
 				}
-			);
-	};
+			})();
+		};
 
-	for (let i = 0; i < concurrency; i++) {
-		next();
+		for (let i = 0; i < concurrency; i++) {
+			next();
 
-		if (isIterableDone) {
-			break;
+			if (isIterableDone) {
+				break;
+			}
 		}
-	}
-});
-
-module.exports = pMap;
-// TODO: Remove this for the next major release
-module.exports.default = pMap;
+	});
+};

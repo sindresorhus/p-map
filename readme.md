@@ -19,10 +19,9 @@ const pMap = require('p-map');
 const got = require('got');
 
 const sites = [
-	getWebsiteFromUsername('sindresorhus'), //=> Promise
-	'ava.li',
-	'todomvc.com',
-	'github.com'
+	getWebsiteFromUsername('https://sindresorhus'), //=> Promise
+	'https://ava.li',
+	'https://github.com'
 ];
 
 (async () => {
@@ -34,7 +33,7 @@ const sites = [
  	const result = await pMap(sites, mapper, {concurrency: 2});
 
 	console.log(result);
-	//=> ['http://sindresorhus.com/', 'http://ava.li/', 'http://todomvc.com/', 'http://github.com/']
+	//=> ['https://sindresorhus.com/', 'https://ava.li/', 'https://github.com/']
 })();
 ```
 
