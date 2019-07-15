@@ -15,18 +15,30 @@ const sharedInput = [
 const errorInput1 = [
 	[20, 200],
 	[30, 100],
-	Promise.reject(new Error('foo')),
-	Promise.reject(new Error('bar'))
+	[() => Promise.reject(new Error('foo')), 10],
+	[() => {
+		throw new Error('bar');
+	}, 10]
 ];
 
 const errorInput2 = [
 	[20, 200],
-	Promise.reject(new Error('bar')),
+	[() => Promise.reject(new Error('bar')), 10],
 	[30, 100],
-	Promise.reject(new Error('foo'))
+	[() => {
+		throw new Error('foo');
+	}, 10]
 ];
 
-const mapper = ([value, ms]) => delay(ms, {value});
+const mapper = async ([value, ms]) => {
+	await delay(ms);
+
+	if (typeof value === 'function') {
+		value = await value();
+	}
+
+	return value;
+};
 
 test('main', async t => {
 	const end = timeSpan();
