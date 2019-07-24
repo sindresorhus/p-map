@@ -1,12 +1,13 @@
 'use strict';
-const AggregateError = require('aggregate-error');
+const _AggregateError = require('aggregate-error');
 
 module.exports = async (
 	iterable,
 	mapper,
 	{
 		concurrency = Infinity,
-		stopOnError = true
+		stopOnError = true,
+		AggregateError = _AggregateError
 	} = {}
 ) => {
 	return new Promise((resolve, reject) => {
@@ -16,6 +17,10 @@ module.exports = async (
 
 		if (!(typeof concurrency === 'number' && concurrency >= 1)) {
 			throw new TypeError(`Expected \`concurrency\` to be a number from 1 and up, got \`${concurrency}\` (${typeof concurrency})`);
+		}
+
+		if (typeof AggregateError !== 'function' || !(AggregateError === Error || AggregateError.prototype instanceof Error)) {
+			throw new TypeError(`Expected \`AggregateError\` to be a constructor function that creates an Error, got \`${AggregateError}\` (${typeof AggregateError})`);
 		}
 
 		const ret = [];

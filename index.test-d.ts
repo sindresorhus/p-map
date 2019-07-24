@@ -1,3 +1,4 @@
+import AggregateError = require('aggregate-error');
 import {expectType} from 'tsd';
 import pMap = require('.');
 import {Options, Mapper} from '.';
@@ -41,3 +42,6 @@ expectType<Promise<string[]>>(pMap(sites, (site: string) => site));
 expectType<Promise<number[]>>(pMap(sites, (site: string) => site.length));
 
 expectType<Promise<number[]>>(pMap(numbers, (number: number) => number * 2));
+
+pMap(sites, asyncMapper, {AggregateError: AggregateError});
+pMap(sites, asyncMapper, {AggregateError: class extends AggregateError {}});

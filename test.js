@@ -94,3 +94,24 @@ test('aggregate errors when stopOnError is false', async t => {
 	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /foo(.|\n)*bar/});
 	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /bar(.|\n)*foo/});
 });
+
+test('aggregate errors using custom error class', async t => {
+	class MyAggregateError extends AggregateError {
+		constructor(errors) {
+			super(errors);
+			this.name = MyAggregateError;
+			this.message = `MyAggregateError: ${this.message}`;
+		}
+	}
+
+	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1, stopOnError: false, AggregateError: MyAggregateError}), {instanceOf: MyAggregateError, message: /^MyAggregateError: /});
+
+	class DummyAggregateError extends Error {
+		constructor(errors) {
+			super(String(errors));
+			this.errors = errors;
+		}
+	}
+
+	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1, stopOnError: false, AggregateError: DummyAggregateError}), {instanceOf: DummyAggregateError, message: 'Error: foo,Error: bar'});
+});

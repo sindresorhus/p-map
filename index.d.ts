@@ -1,3 +1,5 @@
+import AggregateError = require('aggregate-error');
+
 declare namespace pMap {
 	interface Options {
 		/**
@@ -13,6 +15,13 @@ declare namespace pMap {
 		@default true
 		*/
 		readonly stopOnError?: boolean;
+
+		/**
+		Alternate error class to reject with when `stopOnError` is `false`.
+
+		@default AggregateError
+		*/
+		readonly AggregateError?: new (errors: Error[]) => Error;
 	}
 
 	/**

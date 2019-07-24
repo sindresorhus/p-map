@@ -74,6 +74,12 @@ Default: `true`
 
 When set to `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
 
+##### AggregateError
+
+Type: `Function`
+
+Alternate error class to reject with when `stopOnError` is `false`. The constructor must accept an array of `Error`s as its sole parameter. The default is [`AggregateError`](https://github.com/sindresorhus/aggregate-error).
+
 
 ## Related
 
