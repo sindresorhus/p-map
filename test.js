@@ -6,7 +6,7 @@ import randomInt from 'random-int';
 import AggregateError from 'aggregate-error';
 import pMap from '.';
 
-const input = [
+const sharedInput = [
 	Promise.resolve([10, 300]),
 	[20, 200],
 	[30, 100]
@@ -15,28 +15,40 @@ const input = [
 const errorInput1 = [
 	[20, 200],
 	[30, 100],
-	Promise.reject(new Error('foo')),
-	Promise.reject(new Error('bar'))
+	[() => Promise.reject(new Error('foo')), 10],
+	[() => {
+		throw new Error('bar');
+	}, 10]
 ];
 
 const errorInput2 = [
 	[20, 200],
-	Promise.reject(new Error('bar')),
+	[() => Promise.reject(new Error('bar')), 10],
 	[30, 100],
-	Promise.reject(new Error('foo'))
+	[() => {
+		throw new Error('foo');
+	}, 10]
 ];
 
-const mapper = ([value, ms]) => delay(ms, {value});
+const mapper = async ([value, ms]) => {
+	await delay(ms);
+
+	if (typeof value === 'function') {
+		value = await value();
+	}
+
+	return value;
+};
 
 test('main', async t => {
 	const end = timeSpan();
-	t.deepEqual(await pMap(input, mapper), [10, 20, 30]);
+	t.deepEqual(await pMap(sharedInput, mapper), [10, 20, 30]);
 	t.true(inRange(end(), {start: 290, end: 430}));
 });
 
 test('concurrency: 1', async t => {
 	const end = timeSpan();
-	t.deepEqual(await pMap(input, mapper, {concurrency: 1}), [10, 20, 30]);
+	t.deepEqual(await pMap(sharedInput, mapper, {concurrency: 1}), [10, 20, 30]);
 	t.true(inRange(end(), {start: 590, end: 760}));
 });
 
@@ -90,7 +102,7 @@ test('immediately rejects when stopOnError is true', async t => {
 });
 
 test('aggregate errors when stopOnError is false', async t => {
-	await t.notThrowsAsync(pMap(input, mapper, {concurrency: 1, stopOnError: false}));
+	await t.notThrowsAsync(pMap(sharedInput, mapper, {concurrency: 1, stopOnError: false}));
 	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /foo(.|\n)*bar/});
 	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /bar(.|\n)*foo/});
 });
