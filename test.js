@@ -91,6 +91,7 @@ test('async with concurrency: 2 (out of order time sequence)', async t => {
 
 test('enforce number in options.concurrency', async t => {
 	await t.throwsAsync(pMap([], () => {}, {concurrency: 0}), TypeError);
+	await t.throwsAsync(pMap([], () => {}, {concurrency: 1.5}), TypeError);
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: 1}));
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: 10}));
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: Infinity}));

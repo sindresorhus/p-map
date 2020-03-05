@@ -3,6 +3,8 @@ declare namespace pMap {
 		/**
 		Number of concurrently pending promises returned by `mapper`.
 
+		Must be an integer from 1 and up or `Infinity`.
+
 		@default Infinity
 		*/
 		readonly concurrency?: number;

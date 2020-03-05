@@ -59,7 +59,7 @@ Type: `object`
 
 ##### concurrency
 
-Type: `number`\
+Type: `number` (Integer)\
 Default: `Infinity`\
 Minimum: `1`
 
