@@ -4,13 +4,14 @@
 	"description": "Map over promises concurrently",
 	"license": "MIT",
 	"repository": "sindresorhus/p-map",
+	"funding": "https://github.com/sponsors/sindresorhus",
 	"author": {
 		"name": "Sindre Sorhus",
 		"email": "sindresorhus@gmail.com",
-		"url": "sindresorhus.com"
+		"url": "https://sindresorhus.com"
 	},
 	"engines": {
-		"node": ">=8"
+		"node": ">=10"
 	},
 	"scripts": {
 		"test": "xo && ava && tsd"
@@ -46,7 +47,7 @@
 		"in-range": "^2.0.0",
 		"random-int": "^2.0.0",
 		"time-span": "^3.1.0",
-		"tsd": "^0.7.2",
-		"xo": "^0.24.0"
+		"tsd": "^0.7.4",
+		"xo": "^0.27.2"
 	}
 }

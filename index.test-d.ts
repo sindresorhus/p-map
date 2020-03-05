@@ -14,10 +14,10 @@ const numbers = [
 	2
 ];
 
-const asyncMapper = async (site: string) => site;
-const asyncSyncMapper = (site: string, index: number) =>
+const asyncMapper = async (site: string): Promise<string> => site;
+const asyncSyncMapper = async (site: string, index: number): Promise<string> =>
 	index > 1 ? site : Promise.resolve(site);
-const multiResultTypeMapper = (site: string, index: number) =>
+const multiResultTypeMapper = async (site: string, index: number): Promise<string | number> =>
 	index > 1 ? site.length : site;
 
 expectType<Mapper>(asyncMapper);
@@ -35,7 +35,7 @@ expectType<Promise<string[]>>(pMap(sites, asyncMapper));
 expectType<Promise<string[]>>(pMap(sites, asyncMapper, {concurrency: 2}));
 
 expectType<Promise<string[]>>(pMap(sites, asyncSyncMapper));
-expectType<Promise<(string | number)[]>>(pMap(sites, multiResultTypeMapper));
+expectType<Promise<Array<string | number>>>(pMap(sites, multiResultTypeMapper));
 
 expectType<Promise<string[]>>(pMap(sites, (site: string) => site));
 expectType<Promise<number[]>>(pMap(sites, (site: string) => site.length));

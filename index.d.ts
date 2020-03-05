@@ -21,7 +21,7 @@ declare namespace pMap {
 	@param element - Iterated element.
 	@param index - Index of the element in the source array.
 	*/
-	type Mapper<Element = any, NewElement = any> = (
+	type Mapper<Element = any, NewElement = unknown> = (
 		element: Element,
 		index: number
 	) => NewElement | Promise<NewElement>;
