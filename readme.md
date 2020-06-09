@@ -4,6 +4,8 @@
 
 Useful when you need to run promise-returning & async functions multiple times with different inputs concurrently.
 
+This is different from `Promise.all()` in that you can control the concurrency and also decide whether or not to stop iterating when there's an error.
+
 ## Install
 
 ```
