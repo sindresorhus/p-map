@@ -1,4 +1,4 @@
-# p-map [![Build Status](https://travis-ci.org/sindresorhus/p-map.svg?branch=master)](https://travis-ci.org/sindresorhus/p-map)
+# p-map
 
 > Map over promises concurrently
 
