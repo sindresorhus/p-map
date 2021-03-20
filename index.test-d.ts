@@ -4,7 +4,7 @@ import {Options, Mapper} from '.';
 
 const sites = [
 	'https://sindresorhus.com',
-	'https://ava.li',
+	'https://avajs.dev',
 	'https://github.com'
 ];
 

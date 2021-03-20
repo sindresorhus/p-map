@@ -41,7 +41,7 @@ import got = require('got');
 
 const sites = [
 	getWebsiteFromUsername('https://sindresorhus'), //=> Promise
-	'https://ava.li',
+	'https://avajs.dev',
 	'https://github.com'
 ];
 
@@ -54,7 +54,7 @@ const sites = [
 	const result = await pMap(sites, mapper, {concurrency: 2});
 
 	console.log(result);
-	//=> ['https://sindresorhus.com/', 'https://ava.li/', 'https://github.com/']
+	//=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
 })();
 ```
 */
