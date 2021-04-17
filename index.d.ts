@@ -1,33 +1,31 @@
-declare namespace pMap {
-	interface Options {
-		/**
-		Number of concurrently pending promises returned by `mapper`.
+export interface Options {
+	/**
+	Number of concurrently pending promises returned by `mapper`.
 
-		Must be an integer from 1 and up or `Infinity`.
+	Must be an integer from 1 and up or `Infinity`.
 
-		@default Infinity
-		*/
-		readonly concurrency?: number;
-
-		/**
-		When set to `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
-
-		@default true
-		*/
-		readonly stopOnError?: boolean;
-	}
+	@default Infinity
+	*/
+	readonly concurrency?: number;
 
 	/**
-	Function which is called for every item in `input`. Expected to return a `Promise` or value.
+	When set to `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
 
-	@param element - Iterated element.
-	@param index - Index of the element in the source array.
+	@default true
 	*/
-	type Mapper<Element = any, NewElement = unknown> = (
-		element: Element,
-		index: number
-	) => NewElement | Promise<NewElement>;
+	readonly stopOnError?: boolean;
 }
+
+/**
+Function which is called for every item in `input`. Expected to return a `Promise` or value.
+
+@param element - Iterated element.
+@param index - Index of the element in the source array.
+*/
+export type Mapper<Element = any, NewElement = unknown> = (
+	element: Element,
+	index: number
+) => NewElement | Promise<NewElement>;
 
 /**
 @param input - Iterated over concurrently in the `mapper` function.
@@ -36,8 +34,8 @@ declare namespace pMap {
 
 @example
 ```
-import pMap = require('p-map');
-import got = require('got');
+import pMap from 'p-map';
+import got from 'got';
 
 const sites = [
 	getWebsiteFromUsername('https://sindresorhus'), //=> Promise
@@ -45,23 +43,19 @@ const sites = [
 	'https://github.com'
 ];
 
-(async () => {
-	const mapper = async site => {
-		const {requestUrl} = await got.head(site);
-		return requestUrl;
-	};
+const mapper = async site => {
+	const {requestUrl} = await got.head(site);
+	return requestUrl;
+};
 
-	const result = await pMap(sites, mapper, {concurrency: 2});
+const result = await pMap(sites, mapper, {concurrency: 2});
 
-	console.log(result);
-	//=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
-})();
+console.log(result);
+//=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
 ```
 */
-declare function pMap<Element, NewElement>(
+export default function pMap<Element, NewElement>(
 	input: Iterable<Element>,
-	mapper: pMap.Mapper<Element, NewElement>,
-	options?: pMap.Options
+	mapper: Mapper<Element, NewElement>,
+	options?: Options
 ): Promise<NewElement[]>;
-
-export = pMap;

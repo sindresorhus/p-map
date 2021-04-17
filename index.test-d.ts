@@ -1,6 +1,5 @@
-import {expectType} from 'tsd';
-import pMap = require('.');
-import {Options, Mapper} from '.';
+import {expectType, expectAssignable} from 'tsd';
+import pMap, {Options, Mapper} from './index.js';
 
 const sites = [
 	'https://sindresorhus.com',
@@ -20,16 +19,16 @@ const asyncSyncMapper = async (site: string, index: number): Promise<string> =>
 const multiResultTypeMapper = async (site: string, index: number): Promise<string | number> =>
 	index > 1 ? site.length : site;
 
-expectType<Mapper>(asyncMapper);
-expectType<Mapper<string, string>>(asyncMapper);
-expectType<Mapper>(asyncSyncMapper);
-expectType<Mapper<string, string | Promise<string>>>(asyncSyncMapper);
-expectType<Mapper>(multiResultTypeMapper);
-expectType<Mapper<string, string | number>>(multiResultTypeMapper);
+expectAssignable<Mapper>(asyncMapper);
+expectAssignable<Mapper<string, string>>(asyncMapper);
+expectAssignable<Mapper>(asyncSyncMapper);
+expectAssignable<Mapper<string, string | Promise<string>>>(asyncSyncMapper);
+expectAssignable<Mapper>(multiResultTypeMapper);
+expectAssignable<Mapper<string, string | number>>(multiResultTypeMapper);
 
-expectType<Options>({});
-expectType<Options>({concurrency: 0});
-expectType<Options>({stopOnError: false});
+expectAssignable<Options>({});
+expectAssignable<Options>({concurrency: 0});
+expectAssignable<Options>({stopOnError: false});
 
 expectType<Promise<string[]>>(pMap(sites, asyncMapper));
 expectType<Promise<string[]>>(pMap(sites, asyncMapper, {concurrency: 2}));

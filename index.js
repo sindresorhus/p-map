@@ -1,20 +1,19 @@
-'use strict';
-const AggregateError = require('aggregate-error');
+import AggregateError from 'aggregate-error';
 
-module.exports = async (
+export default async function pMap(
 	iterable,
 	mapper,
 	{
-		concurrency = Infinity,
+		concurrency = Number.POSITIVE_INFINITY,
 		stopOnError = true
 	} = {}
-) => {
+) {
 	return new Promise((resolve, reject) => {
 		if (typeof mapper !== 'function') {
 			throw new TypeError('Mapper function is required');
 		}
 
-		if (!((Number.isSafeInteger(concurrency) || concurrency === Infinity) && concurrency >= 1)) {
+		if (!((Number.isSafeInteger(concurrency) || concurrency === Number.POSITIVE_INFINITY) && concurrency >= 1)) {
 			throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
 		}
 
@@ -39,7 +38,7 @@ module.exports = async (
 				isIterableDone = true;
 
 				if (resolvingCount === 0) {
-					if (!stopOnError && errors.length !== 0) {
+					if (!stopOnError && errors.length > 0) {
 						reject(new AggregateError(errors));
 					} else {
 						resolve(result);
@@ -70,7 +69,7 @@ module.exports = async (
 			})();
 		};
 
-		for (let i = 0; i < concurrency; i++) {
+		for (let index = 0; index < concurrency; index++) {
 			next();
 
 			if (isIterableDone) {
@@ -78,4 +77,4 @@ module.exports = async (
 			}
 		}
 	});
-};
+}

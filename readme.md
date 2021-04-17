@@ -15,8 +15,8 @@ $ npm install p-map
 ## Usage
 
 ```js
-const pMap = require('p-map');
-const got = require('got');
+import pMap from 'p-map';
+import got from 'got';
 
 const sites = [
 	getWebsiteFromUsername('https://sindresorhus'), //=> Promise
@@ -24,17 +24,15 @@ const sites = [
 	'https://github.com'
 ];
 
-(async () => {
-	const mapper = async site => {
-		const {requestUrl} = await got.head(site);
-		return requestUrl;
-	};
+const mapper = async site => {
+	const {requestUrl} = await got.head(site);
+	return requestUrl;
+};
 
- 	const result = await pMap(sites, mapper, {concurrency: 2});
+const result = await pMap(sites, mapper, {concurrency: 2});
 
-	console.log(result);
-	//=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
-})();
+console.log(result);
+//=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
 ```
 
 ## API
@@ -61,7 +59,7 @@ Type: `object`
 
 ##### concurrency
 
-Type: `number` (Integer)\
+Type: `number` *(Integer)*\
 Default: `Infinity`\
 Minimum: `1`
 

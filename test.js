@@ -4,7 +4,7 @@ import inRange from 'in-range';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
 import AggregateError from 'aggregate-error';
-import pMap from '.';
+import pMap from './index.js';
 
 const sharedInput = [
 	Promise.resolve([10, 300]),
@@ -56,7 +56,7 @@ test('concurrency: 4', async t => {
 	const concurrency = 4;
 	let running = 0;
 
-	await pMap(new Array(100).fill(0), async () => {
+	await pMap(Array.from({length: 100}).fill(0), async () => {
 		running++;
 		t.true(running <= concurrency);
 		await delay(randomInt(30, 200));
@@ -69,7 +69,7 @@ test('handles empty iterable', async t => {
 });
 
 test('async with concurrency: 2 (random time sequence)', async t => {
-	const input = new Array(10).map(() => randomInt(0, 100));
+	const input = Array.from({length: 10}).map(() => randomInt(0, 100));
 	const mapper = value => delay(value, {value});
 	const result = await pMap(input, mapper, {concurrency: 2});
 	t.deepEqual(result, input);
@@ -90,16 +90,16 @@ test('async with concurrency: 2 (out of order time sequence)', async t => {
 });
 
 test('enforce number in options.concurrency', async t => {
-	await t.throwsAsync(pMap([], () => {}, {concurrency: 0}), TypeError);
-	await t.throwsAsync(pMap([], () => {}, {concurrency: 1.5}), TypeError);
+	await t.throwsAsync(pMap([], () => {}, {concurrency: 0}), {instanceOf: TypeError});
+	await t.throwsAsync(pMap([], () => {}, {concurrency: 1.5}), {instanceOf: TypeError});
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: 1}));
 	await t.notThrowsAsync(pMap([], () => {}, {concurrency: 10}));
-	await t.notThrowsAsync(pMap([], () => {}, {concurrency: Infinity}));
+	await t.notThrowsAsync(pMap([], () => {}, {concurrency: Number.POSITIVE_INFINITY}));
 });
 
 test('immediately rejects when stopOnError is true', async t => {
-	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1}), 'foo');
-	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1}), 'bar');
+	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1}), {message: 'foo'});
+	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1}), {message: 'bar'});
 });
 
 test('aggregate errors when stopOnError is false', async t => {
