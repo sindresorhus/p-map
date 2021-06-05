@@ -4,7 +4,11 @@
 
 Useful when you need to run promise-returning & async functions multiple times with different inputs concurrently.
 
-This is different from `Promise.all()` in that you can control the concurrency and also decide whether or not to stop iterating when there's an error.
+This is different from `Promise.all()` in that you can:
+
+* Control the concurrency
+* Decide whether or not to stop iterating when there's an error
+* Stop iterating at any point (like `break` in standard loops)
 
 ## Install
 
@@ -33,6 +37,29 @@ const result = await pMap(sites, mapper, {concurrency: 2});
 
 console.log(result);
 //=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
+```
+
+### Breaking from iteration
+
+```js
+import pMap from 'p-map';
+import got from 'got';
+
+const numbers = Array.from({ length: 2000 }).map((_, i) => i + 1);
+//=> [1, 2, ..., 1999, 2000]
+
+const mapper = async number => {
+	if (number !== 404) {
+		const { transcript } = await got(`https://xkcd.com/${number}/info.0.json`).json();
+		if (/unicorn/.test(transcript)) {
+			console.log('Found a XKCD comic with an unicorn:', number);
+			return pMap.stop();
+		}
+	}
+};
+
+await pMap(numbers, mapper, { concurrency: 50 });
+//=> Found a XKCD comic with an unicorn: 948
 ```
 
 ## API
@@ -71,6 +98,44 @@ Type: `boolean`\
 Default: `true`
 
 When set to `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
+
+### pMap.stop(options?)
+
+Creates a special object that indicates to `pMap` that iteration must stop immediately. This object should just be returned from within the mapper (and not used directly for anything).
+
+#### options
+
+Type: `object`
+
+##### value
+
+Type: `any`\
+Default: `undefined`
+
+Value to provide as result for this iteration.
+
+##### ongoingMappings
+
+Type: `object`
+
+Options to configure what `pMap` must do with any concurrent ongoing mappings at the moment `stop` is called.
+
+###### collapse
+
+Type: `boolean`\
+Default: `false`
+
+Whether or not to remove all holes from the result array (caused by pending mappings).
+
+###### fillWith
+
+Type: `any`\
+Default: `undefined`
+
+Value to use as immediate result for pending mappings, replacing holes from the result array.
+
+This option is ignored if `collapse` is set to `true`.
+
 
 ## p-map for enterprise
 

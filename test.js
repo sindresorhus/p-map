@@ -107,3 +107,73 @@ test('aggregate errors when stopOnError is false', async t => {
 	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /foo(.|\n)*bar/});
 	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /bar(.|\n)*foo/});
 });
+
+test('stop early, finite concurrency, default ongoingMappings behavior', async t => {
+	const input = [
+		[1, 300],
+		[2, 100],
+		[() => pMap.stop({value: 3}), 200],
+		[4, 300],
+		[5, 50],
+		[6, 100],
+		[7, 50]
+	];
+
+	const result = await pMap(input, mapper, {concurrency: 4});
+	t.deepEqual(result, [undefined, 2, 3, undefined, 5, undefined]);
+});
+
+test('stop early, finite concurrency, collapse', async t => {
+	const input = [
+		[1, 300],
+		[2, 100],
+		[() => pMap.stop({value: 3, ongoingMappings: {collapse: true}}), 200],
+		[4, 300],
+		[5, 50],
+		[6, 100],
+		[7, 50]
+	];
+
+	const result = await pMap(input, mapper, {concurrency: 4});
+	t.deepEqual(result, [2, 3, 5]);
+});
+
+test('stop early, finite concurrency, fill with zeros', async t => {
+	const input = [
+		[1, 300],
+		[2, 100],
+		[() => pMap.stop({value: 3, ongoingMappings: {fillWith: 0}}), 200],
+		[4, 300],
+		[5, 50],
+		[6, 100],
+		[7, 50]
+	];
+
+	const result = await pMap(input, mapper, {concurrency: 4});
+	t.deepEqual(result, [0, 2, 3, 0, 5, 0]);
+});
+
+test('stop early, collapse overrides fillWith', async t => {
+	const input = [
+		[1, 100],
+		[2, 10],
+		[() => pMap.stop({value: 3, ongoingMappings: {collapse: true, fillWith: 0}}), 20],
+		[4, 50],
+		[5, 50]
+	];
+
+	const result = await pMap(input, mapper);
+	t.deepEqual(result, [2, 3]);
+});
+
+test('stop early, stop value is optional', async t => {
+	const input = [
+		[1, 10],
+		[2, 10],
+		[() => pMap.stop(), 10],
+		[4, 10]
+	];
+
+	const result = await pMap(input, mapper, {concurrency: 1});
+	t.deepEqual(result, [1, 2, undefined]);
+});

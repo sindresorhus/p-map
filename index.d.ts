@@ -1,3 +1,7 @@
+declare const stop: unique symbol;
+
+export type StopSymbol = typeof stop;
+
 export interface Options {
 	/**
 	Number of concurrently pending promises returned by `mapper`.
@@ -16,6 +20,46 @@ export interface Options {
 	readonly stopOnError?: boolean;
 }
 
+export interface OngoingMappingsStopOptions {
+	/**
+	Whether or not to remove all holes from the result array (caused by pending mappings).
+
+	@default false
+	*/
+	readonly collapse?: boolean;
+
+	/**
+	Value to use as immediate result for pending mappings, replacing holes from the result array.
+
+	This option is ignored if `collapse` is set to `true`.
+
+	@default undefined
+	*/
+	readonly fillWith?: unknown;
+}
+
+export interface StopOptions<NewElement> {
+	/**
+	Value to provide as result for this iteration.
+
+	@default undefined
+	*/
+	readonly value?: NewElement;
+
+	/**
+	Options to configure what `pMap` must do with any concurrent ongoing mappings at the moment `stop` is called.
+	*/
+	readonly ongoingMappings?: OngoingMappingsStopOptions;
+}
+
+type BaseStopValueWrapper<NewElement> = {
+	[stop]: Required<StopOptions<NewElement>>;
+};
+
+export type StopValueWrapper<NewElement> = NewElement extends any ? BaseStopValueWrapper<NewElement> : never;
+
+type MaybeWrappedInStop<NewElement> = NewElement | StopValueWrapper<NewElement>;
+
 /**
 Function which is called for every item in `input`. Expected to return a `Promise` or value.
 
@@ -25,7 +69,7 @@ Function which is called for every item in `input`. Expected to return a `Promis
 export type Mapper<Element = any, NewElement = unknown> = (
 	element: Element,
 	index: number
-) => NewElement | Promise<NewElement>;
+) => MaybeWrappedInStop<NewElement> | Promise<MaybeWrappedInStop<NewElement>>;
 
 /**
 @param input - Iterated over concurrently in the `mapper` function.
@@ -54,8 +98,39 @@ console.log(result);
 //=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
 ```
 */
-export default function pMap<Element, NewElement>(
-	input: Iterable<Element>,
-	mapper: Mapper<Element, NewElement>,
-	options?: Options
-): Promise<NewElement[]>;
+declare const pMap: {
+	<Element, NewElement>(
+		input: Iterable<Element>,
+		mapper: Mapper<Element, NewElement>,
+		options?: Options
+	): Promise<NewElement[]>;
+
+	/**
+	Creates a special object that indicates to `pMap` that iteration must stop immediately. This object should just be returned from within the mapper (and not used directly for anything).
+
+	@example
+	```
+	import pMap from 'p-map';
+	import got from 'got';
+
+	const numbers = Array.from({ length: 2000 }).map((_, i) => i + 1);
+	//=> [1, 2, ..., 1999, 2000]
+
+	const mapper = async number => {
+		if (number !== 404) {
+			const { transcript } = await got(`https://xkcd.com/${number}/info.0.json`).json();
+			if (/unicorn/.test(transcript)) {
+				console.log('Found a XKCD comic with an unicorn:', number);
+				return pMap.stop();
+			}
+		}
+	};
+
+	await pMap(numbers, mapper, { concurrency: 50 });
+	//=> Found a XKCD comic with an unicorn: 948
+	```
+	*/
+	stop: <NewElement>(options?: StopOptions<NewElement>) => StopValueWrapper<NewElement>;
+};
+
+export default pMap;
