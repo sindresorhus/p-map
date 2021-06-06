@@ -38,7 +38,7 @@ import pMap from 'p-map';
 import got from 'got';
 
 const sites = [
-	getWebsiteFromUsername('https://sindresorhus'), //=> Promise
+	getWebsiteFromUsername('sindresorhus'), //=> Promise
 	'https://avajs.dev',
 	'https://github.com'
 ];
