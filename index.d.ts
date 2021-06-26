@@ -1,6 +1,6 @@
-declare const stopSymbol: unique symbol;
+declare const stop: unique symbol;
 
-export type StopSymbol = typeof stopSymbol;
+export type StopSymbol = typeof stop;
 
 export interface Options {
 	/**
@@ -53,7 +53,7 @@ export interface StopOptions<NewElement> {
 }
 
 type BaseStopValueWrapper<NewElement> = {
-	[stopSymbol]: Required<StopOptions<NewElement>>;
+	[stop]: Required<StopOptions<NewElement>>;
 };
 
 export type StopValueWrapper<NewElement> = NewElement extends any ? BaseStopValueWrapper<NewElement> : never;
@@ -98,35 +98,39 @@ console.log(result);
 //=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
 ```
 */
-export default function pMap<Element, NewElement>(
-	input: Iterable<Element>,
-	mapper: Mapper<Element, NewElement>,
-	options?: Options
-): Promise<NewElement[]>;
+declare const pMap: {
+	<Element, NewElement>(
+		input: Iterable<Element>,
+		mapper: Mapper<Element, NewElement>,
+		options?: Options
+	): Promise<NewElement[]>;
 
-/**
-Creates a special object that indicates to `pMap` that iteration must stop immediately. This object should just be returned from within the mapper (and not used directly for anything).
+	/**
+	Creates a special object that indicates to `pMap` that iteration must stop immediately. This object should just be returned from within the mapper (and not used directly for anything).
 
-@example
-```
-import pMap from 'p-map';
-import got from 'got';
+	@example
+	```
+	import pMap from 'p-map';
+	import got from 'got';
 
-const numbers = Array.from({length: 2000}).map((_, index) => index + 1);
-//=> [1, 2, ..., 1999, 2000]
+	const numbers = Array.from({length: 2000}).map((_, index) => index + 1);
+	//=> [1, 2, ..., 1999, 2000]
 
-const mapper = async number => {
-	if (number !== 404) {
-		const {transcript} = await got(`https://xkcd.com/${number}/info.0.json`).json();
-		if (/unicorn/.test(transcript)) {
-			console.log('Found a XKCD comic with an unicorn:', number);
-			return pMap.stop();
+	const mapper = async number => {
+		if (number !== 404) {
+			const {transcript} = await got(`https://xkcd.com/${number}/info.0.json`).json();
+			if (/unicorn/.test(transcript)) {
+				console.log('Found a XKCD comic with an unicorn:', number);
+				return pMap.stop();
+			}
 		}
-	}
+	};
+
+	await pMap(numbers, mapper, {concurrency: 50});
+	//=> Found a XKCD comic with an unicorn: 948
+	```
+	*/
+	stop: <NewElement>(options?: StopOptions<NewElement>) => StopValueWrapper<NewElement>;
 };
 
-await pMap(numbers, mapper, {concurrency: 50});
-//=> Found a XKCD comic with an unicorn: 948
-```
-*/
-export function stop<NewElement>(options?: StopOptions<NewElement>): StopValueWrapper<NewElement>;
+export default pMap;
