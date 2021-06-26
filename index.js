@@ -22,7 +22,7 @@ export default async function pMap(
 		const result = [];
 		const errors = [];
 		const iterator = iterable[Symbol.iterator]();
-		const pendingIndexes = new Set();
+		const pendingIndices = new Set();
 		let isFinished = false;
 		let isIterableDone = false;
 		let currentIndex = 0;
@@ -39,7 +39,7 @@ export default async function pMap(
 			if (nextItem.done) {
 				isIterableDone = true;
 
-				if (pendingIndexes.size === 0) {
+				if (pendingIndices.size === 0) {
 					if (!stopOnError && errors.length > 0) {
 						reject(new AggregateError(errors));
 					} else {
@@ -50,7 +50,7 @@ export default async function pMap(
 				return;
 			}
 
-			pendingIndexes.add(index);
+			pendingIndices.add(index);
 
 			(async () => {
 				try {
@@ -66,7 +66,7 @@ export default async function pMap(
 						return;
 					}
 
-					pendingIndexes.delete(index);
+					pendingIndices.delete(index);
 
 					if (result[index] && result[index][stopSymbol]) {
 						isFinished = true;
@@ -75,7 +75,7 @@ export default async function pMap(
 						if (stopConfig.ongoingMappings.collapse) {
 							resolve(result.flat(0));
 						} else {
-							for (const pendingIndex of pendingIndexes) {
+							for (const pendingIndex of pendingIndices) {
 								result[pendingIndex] = stopConfig.ongoingMappings.fillWith;
 							}
 
@@ -90,7 +90,7 @@ export default async function pMap(
 						reject(error);
 					} else {
 						errors.push(error);
-						pendingIndexes.delete(index);
+						pendingIndices.delete(index);
 						next();
 					}
 				}
