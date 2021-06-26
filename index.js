@@ -55,11 +55,6 @@ export default async function pMap(
 			(async () => {
 				try {
 					const element = await nextItem.value;
-
-					if (isFinished) {
-						return;
-					}
-
 					result[index] = await mapper(element, index);
 
 					if (isFinished) {
