@@ -23,12 +23,12 @@ export default async function pMap(
 		const errors = [];
 		const iterator = iterable[Symbol.iterator]();
 		const pendingIndexes = new Set();
-		let finished = false;
+		let isFinished = false;
 		let isIterableDone = false;
 		let currentIndex = 0;
 
 		const next = () => {
-			if (finished) {
+			if (isFinished) {
 				return;
 			}
 
@@ -56,20 +56,20 @@ export default async function pMap(
 				try {
 					const element = await nextItem.value;
 
-					if (finished) {
+					if (isFinished) {
 						return;
 					}
 
 					result[index] = await mapper(element, index);
 
-					if (finished) {
+					if (isFinished) {
 						return;
 					}
 
 					pendingIndexes.delete(index);
 
 					if (result[index] && result[index][stopSymbol]) {
-						finished = true;
+						isFinished = true;
 						const stopConfig = result[index][stopSymbol];
 						result[index] = stopConfig.value;
 						if (stopConfig.ongoingMappings.collapse) {
@@ -86,7 +86,7 @@ export default async function pMap(
 					}
 				} catch (error) {
 					if (stopOnError) {
-						finished = true;
+						isFinished = true;
 						reject(error);
 					} else {
 						errors.push(error);
