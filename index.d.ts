@@ -106,7 +106,7 @@ declare const pMap: {
 	): Promise<NewElement[]>;
 
 	/**
-	Creates a special object that indicates to `pMap` that iteration must stop immediately. This object should just be returned from within the mapper (and not used directly for anything).
+	Creates a special value that should be returned from `mapper` in order to immediately stop iteration.
 
 	@example
 	```

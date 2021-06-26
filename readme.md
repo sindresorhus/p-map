@@ -101,7 +101,7 @@ When set to `false`, instead of stopping when a promise rejects, it will wait fo
 
 ### pMap.stop(options?)
 
-Creates a special object that indicates to `pMap` that iteration must stop immediately. This object should just be returned from within the mapper (and not used directly for anything).
+Creates a special value that should be returned from `mapper` in order to immediately stop iteration.
 
 #### options
 
