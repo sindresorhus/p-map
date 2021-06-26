@@ -1,5 +1,7 @@
 import AggregateError from 'aggregate-error';
 
+const stopSymbol = Symbol('pMap.stop');
+
 export default async function pMap(
 	iterable,
 	mapper,
@@ -20,13 +22,13 @@ export default async function pMap(
 		const result = [];
 		const errors = [];
 		const iterator = iterable[Symbol.iterator]();
-		let isRejected = false;
+		const pendingIndices = new Set();
+		let isFinished = false;
 		let isIterableDone = false;
-		let resolvingCount = 0;
 		let currentIndex = 0;
 
 		const next = () => {
-			if (isRejected) {
+			if (isFinished) {
 				return;
 			}
 
@@ -37,7 +39,7 @@ export default async function pMap(
 			if (nextItem.done) {
 				isIterableDone = true;
 
-				if (resolvingCount === 0) {
+				if (pendingIndices.size === 0) {
 					if (!stopOnError && errors.length > 0) {
 						reject(new AggregateError(errors));
 					} else {
@@ -48,21 +50,42 @@ export default async function pMap(
 				return;
 			}
 
-			resolvingCount++;
+			pendingIndices.add(index);
 
 			(async () => {
 				try {
 					const element = await nextItem.value;
 					result[index] = await mapper(element, index);
-					resolvingCount--;
-					next();
+
+					if (isFinished) {
+						return;
+					}
+
+					pendingIndices.delete(index);
+
+					if (result[index] && result[index][stopSymbol]) {
+						isFinished = true;
+						const stopConfig = result[index][stopSymbol];
+						result[index] = stopConfig.value;
+						if (stopConfig.ongoingMappings.collapse) {
+							resolve(result.flat(0));
+						} else {
+							for (const pendingIndex of pendingIndices) {
+								result[pendingIndex] = stopConfig.ongoingMappings.fillWith;
+							}
+
+							resolve(result);
+						}
+					} else {
+						next();
+					}
 				} catch (error) {
 					if (stopOnError) {
-						isRejected = true;
+						isFinished = true;
 						reject(error);
 					} else {
 						errors.push(error);
-						resolvingCount--;
+						pendingIndices.delete(index);
 						next();
 					}
 				}
@@ -78,3 +101,5 @@ export default async function pMap(
 		}
 	});
 }
+
+pMap.stop = ({value, ongoingMappings = {}} = {}) => ({[stopSymbol]: {value, ongoingMappings}});
