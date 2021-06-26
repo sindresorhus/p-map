@@ -4,7 +4,7 @@ import inRange from 'in-range';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
 import AggregateError from 'aggregate-error';
-import pMap from './index.js';
+import pMap, {skip} from './index.js';
 
 const sharedInput = [
 	Promise.resolve([10, 300]),
@@ -106,4 +106,12 @@ test('aggregate errors when stopOnError is false', async t => {
 	await t.notThrowsAsync(pMap(sharedInput, mapper, {concurrency: 1, stopOnError: false}));
 	await t.throwsAsync(pMap(errorInput1, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /foo(.|\n)*bar/});
 	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /bar(.|\n)*foo/});
+});
+
+test('.skip', async t => {
+	t.deepEqual(await pMap([
+		1,
+		skip,
+		2
+	], async value => value), [1, 2]);
 });

@@ -72,6 +72,35 @@ Default: `true`
 
 When set to `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
 
+### pMap.skip
+
+Return this value from a `mapper` function to skip adding a value in the returned array.
+
+```js
+import pMap, {skip} from 'p-map';
+import got from 'got';
+
+const sites = [
+	getWebsiteFromUsername('sindresorhus'), //=> Promise
+	'https://avajs.dev',
+	'https://github.com'
+];
+
+const mapper = async site => {
+	try {
+		const {requestUrl} = await got.head(site);
+		return requestUrl;
+	} catch {
+		return skip
+	}
+};
+
+const result = await pMap(sites, mapper, {concurrency: 2});
+
+console.log(result);
+//=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
+```
+
 ## p-map for enterprise
 
 Available as part of the Tidelift Subscription.

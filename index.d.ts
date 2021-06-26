@@ -58,4 +58,35 @@ export default function pMap<Element, NewElement>(
 	input: Iterable<Element>,
 	mapper: Mapper<Element, NewElement>,
 	options?: Options
-): Promise<NewElement[]>;
+): Promise<Array<Exclude<NewElement, typeof skip>>>;
+
+/**
+Return this value from a `mapper` function to skip adding a value in the returned array.
+
+@example
+```js
+import pMap, {skip} from 'p-map';
+import got from 'got';
+
+const sites = [
+	getWebsiteFromUsername('sindresorhus'), //=> Promise
+	'https://avajs.dev',
+	'https://github.com'
+];
+
+const mapper = async site => {
+	try {
+		const {requestUrl} = await got.head(site);
+		return requestUrl;
+	} catch {
+		return skip
+	}
+};
+
+const result = await pMap(sites, mapper, {concurrency: 2});
+
+console.log(result);
+//=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
+```
+*/
+export const skip: unique symbol;

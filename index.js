@@ -19,6 +19,7 @@ export default async function pMap(
 
 		const result = [];
 		const errors = [];
+		const skippedIndexes = [];
 		const iterator = iterable[Symbol.iterator]();
 		let isRejected = false;
 		let isIterableDone = false;
@@ -41,6 +42,10 @@ export default async function pMap(
 					if (!stopOnError && errors.length > 0) {
 						reject(new AggregateError(errors));
 					} else {
+						for (const skippedIndex of skippedIndexes) {
+							result.splice(skippedIndex, 1);
+						}
+
 						resolve(result);
 					}
 				}
@@ -53,7 +58,13 @@ export default async function pMap(
 			(async () => {
 				try {
 					const element = await nextItem.value;
-					result[index] = await mapper(element, index);
+					const value = await mapper(element, index);
+					if (value === skip) {
+						skippedIndexes.push(index);
+					} else {
+						result[index] = value;
+					}
+
 					resolvingCount--;
 					next();
 				} catch (error) {
@@ -78,3 +89,5 @@ export default async function pMap(
 		}
 	});
 }
+
+export const skip = Symbol('skip');
