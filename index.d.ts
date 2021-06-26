@@ -113,12 +113,12 @@ declare const pMap: {
 	import pMap from 'p-map';
 	import got from 'got';
 
-	const numbers = Array.from({ length: 2000 }).map((_, i) => i + 1);
+	const numbers = Array.from({length: 2000}).map((_, index) => index + 1);
 	//=> [1, 2, ..., 1999, 2000]
 
 	const mapper = async number => {
 		if (number !== 404) {
-			const { transcript } = await got(`https://xkcd.com/${number}/info.0.json`).json();
+			const {transcript} = await got(`https://xkcd.com/${number}/info.0.json`).json();
 			if (/unicorn/.test(transcript)) {
 				console.log('Found a XKCD comic with an unicorn:', number);
 				return pMap.stop();
@@ -126,7 +126,7 @@ declare const pMap: {
 		}
 	};
 
-	await pMap(numbers, mapper, { concurrency: 50 });
+	await pMap(numbers, mapper, {concurrency: 50});
 	//=> Found a XKCD comic with an unicorn: 948
 	```
 	*/
