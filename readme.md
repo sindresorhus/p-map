@@ -8,7 +8,7 @@ This is different from `Promise.all()` in that you can:
 
 * Control the concurrency
 * Decide whether or not to stop iterating when there's an error
-* Stop iterating at any point (like `break` in standard loops)
+* Stop iterating at any point (like `break` in `for` loops)
 
 ## Install
 
