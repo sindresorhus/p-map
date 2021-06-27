@@ -72,12 +72,12 @@ Default: `true`
 
 When set to `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
 
-### skip
+### pMapSkip
 
 Return this value from a `mapper` function to skip adding a value in the returned array.
 
 ```js
-import pMap, {skip} from 'p-map';
+import pMap, {pMapSkip} from 'p-map';
 import got from 'got';
 
 const sites = [
@@ -92,7 +92,7 @@ const mapper = async site => {
 		const {requestUrl} = await got.head(site);
 		return requestUrl;
 	} catch {
-		return skip
+		return pMapSkip
 	}
 };
 

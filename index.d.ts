@@ -58,14 +58,14 @@ export default function pMap<Element, NewElement>(
 	input: Iterable<Element>,
 	mapper: Mapper<Element, NewElement>,
 	options?: Options
-): Promise<Array<Exclude<NewElement, typeof skip>>>;
+): Promise<Array<Exclude<NewElement, typeof pMapSkip>>>;
 
 /**
 Return this value from a `mapper` function to skip adding a value in the returned array.
 
 @example
 ```js
-import pMap, {skip} from 'p-map';
+import pMap, {pMapSkip} from 'p-map';
 import got from 'got';
 
 const sites = [
@@ -80,7 +80,7 @@ const mapper = async site => {
 		const {requestUrl} = await got.head(site);
 		return requestUrl;
 	} catch {
-		return skip
+		return pMapSkip
 	}
 };
 
@@ -90,4 +90,4 @@ console.log(result);
 //=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
 ```
 */
-export const skip: unique symbol;
+export const pMapSkip: unique symbol;

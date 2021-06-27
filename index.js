@@ -59,7 +59,7 @@ export default async function pMap(
 				try {
 					const element = await nextItem.value;
 					const value = await mapper(element, index);
-					if (value === skip) {
+					if (value === pMapSkip) {
 						skippedIndexes.push(index);
 					} else {
 						result[index] = value;
@@ -90,4 +90,4 @@ export default async function pMap(
 	});
 }
 
-export const skip = Symbol('skip');
+export const pMapSkip = Symbol('skip');
