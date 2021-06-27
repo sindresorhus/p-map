@@ -115,7 +115,8 @@ test('do not run mapping after stop-on-error happened', async t => {
 		pMap(input, async value => {
 			mappedValues.push(value);
 			if (value === 1) {
-				return delay.reject(100, {value: new Error('Oops!')});
+				await delay(100);
+				throw new Error('Oops!');
 			}
 		})
 	);
