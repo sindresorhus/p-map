@@ -83,6 +83,7 @@ import got from 'got';
 const sites = [
 	getWebsiteFromUsername('sindresorhus'), //=> Promise
 	'https://avajs.dev',
+	'https://example.invalid',
 	'https://github.com'
 ];
 
