@@ -53,6 +53,11 @@ export default async function pMap(
 			(async () => {
 				try {
 					const element = await nextItem.value;
+
+					if (isRejected) {
+						return;
+					}
+
 					result[index] = await mapper(element, index);
 					resolvingCount--;
 					next();
