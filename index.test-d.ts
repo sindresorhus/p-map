@@ -1,5 +1,5 @@
 import {expectType, expectAssignable} from 'tsd';
-import pMap, {Options, Mapper} from './index.js';
+import pMap, {Options, Mapper, pMapSkip} from './index.js';
 
 const sites = [
 	'https://sindresorhus.com',
@@ -40,3 +40,11 @@ expectType<Promise<string[]>>(pMap(sites, (site: string) => site));
 expectType<Promise<number[]>>(pMap(sites, (site: string) => site.length));
 
 expectType<Promise<number[]>>(pMap(numbers, (number: number) => number * 2));
+
+expectType<Promise<number[]>>(pMap(numbers, (number: number) => {
+	if (number % 2 === 0) {
+		return number * 2;
+	}
+
+	return pMapSkip;
+}));
