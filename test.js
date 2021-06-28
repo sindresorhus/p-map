@@ -108,10 +108,26 @@ test('aggregate errors when stopOnError is false', async t => {
 	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: /bar(.|\n)*foo/});
 });
 
-test('.skip', async t => {
+test('pMapSkip', async t => {
 	t.deepEqual(await pMap([
 		1,
 		pMapSkip,
 		2
 	], async value => value), [1, 2]);
+});
+
+test('do not run mapping after stop-on-error happened', async t => {
+	const input = [1, delay(300, {value: 2}), 3];
+	const mappedValues = [];
+	await t.throwsAsync(
+		pMap(input, async value => {
+			mappedValues.push(value);
+			if (value === 1) {
+				await delay(100);
+				throw new Error('Oops!');
+			}
+		})
+	);
+	await delay(500);
+	t.deepEqual(mappedValues, [1, 3]);
 });

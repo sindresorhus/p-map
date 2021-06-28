@@ -58,8 +58,13 @@ export default async function pMap(
 			(async () => {
 				try {
 					const element = await nextItem.value;
+
+					if (isRejected) {
+						return;
+					}
+
 					const value = await mapper(element, index);
-					if (value === pMapSkip) {
+          if (value === pMapSkip) {
 						skippedIndexes.push(index);
 					} else {
 						result[index] = value;
