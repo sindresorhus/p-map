@@ -64,7 +64,7 @@ export default function pMap<Element, NewElement>(
 Return this value from a `mapper` function to skip adding a value in the returned array.
 
 @example
-```js
+```
 import pMap, {pMapSkip} from 'p-map';
 import got from 'got';
 
