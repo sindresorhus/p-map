@@ -74,7 +74,7 @@ When set to `false`, instead of stopping when a promise rejects, it will wait fo
 
 ### pMapSkip
 
-Return this value from a `mapper` function to skip adding a value in the returned array.
+Return this value from a `mapper` function to skip including the value in the returned array.
 
 ```js
 import pMap, {pMapSkip} from 'p-map';
