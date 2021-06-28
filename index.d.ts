@@ -61,7 +61,7 @@ export default function pMap<Element, NewElement>(
 ): Promise<Array<Exclude<NewElement, typeof pMapSkip>>>;
 
 /**
-Return this value from a `mapper` function to skip adding a value in the returned array.
+Return this value from a `mapper` function to skip including the value in the returned array.
 
 @example
 ```
