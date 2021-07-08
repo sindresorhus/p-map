@@ -43,6 +43,8 @@ const mapper = async ([value, ms]) => {
 test('main', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(sharedInput, mapper), [10, 20, 30]);
+
+	// We give it some leeway on both sides of the expected 300ms as the exact value depends on the machine and workload.
 	t.true(inRange(end(), {start: 290, end: 430}));
 });
 
