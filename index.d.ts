@@ -55,7 +55,7 @@ console.log(result);
 ```
 */
 export default function pMap<Element, NewElement>(
-	input: Iterable<Element>,
+	input: AsyncIterable<Element> | Iterable<Element>,
 	mapper: Mapper<Element, NewElement>,
 	options?: Options
 ): Promise<Array<Exclude<NewElement, typeof pMapSkip>>>;

@@ -20,23 +20,33 @@ export default async function pMap(
 		const result = [];
 		const errors = [];
 		const skippedIndexes = [];
-		const iterator = iterable[Symbol.iterator]();
 		let isRejected = false;
 		let isIterableDone = false;
 		let resolvingCount = 0;
 		let currentIndex = 0;
+		let asyncIterator = false;
+		let iterator;
+
+		if (iterable[Symbol.iterator] === undefined) {
+			// We've got an async iterable
+			iterator = iterable[Symbol.asyncIterator]();
+			asyncIterator = true;
+		} else {
+			iterator = iterable[Symbol.iterator]();
+		}
 
 		const reject = reason => {
 			isRejected = true;
 			reject_(reason);
 		};
 
-		const next = () => {
+		const next = async () => {
 			if (isRejected) {
 				return;
 			}
 
-			const nextItem = iterator.next();
+			const nextItem = asyncIterator ? await iterator.next() : iterator.next();
+
 			const index = currentIndex;
 			currentIndex++;
 
@@ -60,6 +70,7 @@ export default async function pMap(
 
 			resolvingCount++;
 
+			// Intentionally not awaited
 			(async () => {
 				try {
 					const element = await nextItem.value;
@@ -69,6 +80,7 @@ export default async function pMap(
 					}
 
 					const value = await mapper(element, index);
+
 					if (value === pMapSkip) {
 						skippedIndexes.push(index);
 					} else {
@@ -76,7 +88,7 @@ export default async function pMap(
 					}
 
 					resolvingCount--;
-					next();
+					await next();
 				} catch (error) {
 					if (stopOnError) {
 						reject(error);
@@ -89,7 +101,7 @@ export default async function pMap(
 						// If we continue calling next() indefinitely we will likely end up
 						// in an infinite loop of failed iteration.
 						try {
-							next();
+							await next();
 						} catch (error) {
 							reject(error);
 						}
@@ -98,23 +110,27 @@ export default async function pMap(
 			})();
 		};
 
-		for (let index = 0; index < concurrency; index++) {
-			// Catch errors from the iterable.next() call
-			// In that case we can't really continue regardless of stopOnError state
-			// since an iterable is likely to continue throwing after it throws once.
-			// If we continue calling next() indefinitely we will likely end up
-			// in an infinite loop of failed iteration.
-			try {
-				next();
-			} catch (error) {
-				reject(error);
-				break;
-			}
+		// Create the concurrent runners in a detached (non-awaited)
+		// promise.  We need this so we can await the next() calls
+		// to stop creating runners before hitting the concurrency limit
+		// if the iterable has already been marked as done.
+		// NOTE: We *must* do this for async iterators otherwise we'll spin up
+		// infinite next() calls by default and never start the event loop.
+		(async () => {
+			for (let index = 0; index < concurrency; index++) {
+				try {
+					// eslint-disable-next-line no-await-in-loop
+					await next();
+				} catch (error) {
+					reject(error);
+					break;
+				}
 
-			if (isIterableDone || isRejected) {
-				break;
+				if (isIterableDone || isRejected) {
+					break;
+				}
 			}
-		}
+		})();
 	});
 }
 
