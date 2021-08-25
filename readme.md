@@ -92,7 +92,7 @@ const mapper = async site => {
 		const {requestUrl} = await got.head(site);
 		return requestUrl;
 	} catch {
-		return pMapSkip
+		return pMapSkip;
 	}
 };
 
