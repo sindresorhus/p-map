@@ -27,7 +27,7 @@ export default async function pMap(
 		let currentIndex = 0;
 
 		const next = () => {
-			if (isRejected) {
+			if (stopOnError && isRejected) {
 				return;
 			}
 
