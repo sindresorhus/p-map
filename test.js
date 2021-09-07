@@ -378,3 +378,35 @@ test('incorrect input type', async t => {
 	await t.throwsAsync(task, {message: 'Expected `input` to be either an `Iterable` or `AsyncIterable`, got (number)'});
 	t.false(mapperCalled);
 });
+test('no unhandled rejected promises from mapper throws - infinite concurrency', async t => {
+	const input = [1, 2, 3];
+	const mappedValues = [];
+	await t.throwsAsync(
+		pMap(input, async value => {
+			mappedValues.push(value);
+			await delay(100);
+			throw new Error(`Oops! ${value}`);
+		}),
+		{message: 'Some big AggregateError message'}
+	);
+	// Note: all 3 mappers get invoked, all 3 throw, even with stop on error this
+	// should raise an AggregateError with all 3 exceptions instead of throwing 1
+	// exception and hiding the other 2.
+	t.deepEqual(mappedValues, [1, 2, 3]);
+});
+
+test('no unhandled rejected promises from mapper throws - concurrency 1', async t => {
+	const input = [1, 2, 3];
+	const mappedValues = [];
+	await t.throwsAsync(
+		pMap(input, async value => {
+			mappedValues.push(value);
+			await delay(100);
+			throw new Error(`Oops! ${value}`);
+		},
+		{concurrency: 1}),
+		{message: 'Oops! 1'}
+	);
+	t.deepEqual(mappedValues, [1]);
+});
+
