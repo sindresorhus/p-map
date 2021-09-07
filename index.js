@@ -70,7 +70,7 @@ export default async function pMap(
 
 			resolvingCount++;
 
-			// Intentionally not awaited
+			// Intentionally detached
 			(async () => {
 				try {
 					const element = await nextItem.value;
