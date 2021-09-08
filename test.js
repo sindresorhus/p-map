@@ -409,4 +409,3 @@ test('no unhandled rejected promises from mapper throws - concurrency 1', async 
 	);
 	t.deepEqual(mappedValues, [1]);
 });
-
