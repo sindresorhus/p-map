@@ -45,15 +45,15 @@ class ThrowingIterator {
 		this._max = max;
 		this._throwOnIndex = throwOnIndex;
 		this.index = 0;
+		this[Symbol.iterator] = this[Symbol.iterator].bind(this);
 	}
 
 	[Symbol.iterator]() {
 		let index = 0;
 		const max = this._max;
 		const throwOnIndex = this._throwOnIndex;
-		const obj = this;
 		return {
-			next() {
+			next: (() => {
 				try {
 					if (index === throwOnIndex) {
 						throw new Error(`throwing on index ${index}`);
@@ -63,9 +63,12 @@ class ThrowingIterator {
 					return item;
 				} finally {
 					index++;
-					obj.index = index;
+					this.index = index;
 				}
-			}
+			// eslint is wrong - bind is needed else the next() call cannot update
+			// this.index, which we need to track how many times the iterator was called
+			// eslint-disable-next-line no-extra-bind
+			}).bind(this)
 		};
 	}
 }
