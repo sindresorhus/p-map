@@ -8,7 +8,7 @@ export default async function pMap(
 		stopOnError = true
 	} = {}
 ) {
-	return new Promise((resolve, reject) => {
+	return new Promise((resolve, reject_) => { // eslint-disable-line promise/param-names
 		if (typeof mapper !== 'function') {
 			throw new TypeError('Mapper function is required');
 		}
@@ -25,6 +25,11 @@ export default async function pMap(
 		let isIterableDone = false;
 		let resolvingCount = 0;
 		let currentIndex = 0;
+
+		const reject = reason => {
+			isRejected = true;
+			reject_(reason);
+		};
 
 		const next = () => {
 			if (isRejected) {
@@ -74,7 +79,6 @@ export default async function pMap(
 					next();
 				} catch (error) {
 					if (stopOnError) {
-						isRejected = true;
 						reject(error);
 					} else {
 						errors.push(error);
@@ -87,7 +91,6 @@ export default async function pMap(
 						try {
 							next();
 						} catch (error) {
-							isRejected = true;
 							reject(error);
 						}
 					}
@@ -104,7 +107,6 @@ export default async function pMap(
 			try {
 				next();
 			} catch (error) {
-				isRejected = true;
 				reject(error);
 				break;
 			}
