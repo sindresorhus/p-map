@@ -87,10 +87,8 @@ export default async function pMap(
 						try {
 							next();
 						} catch (error) {
-							if (!isRejected) {
-								isRejected = true;
-								reject(error);
-							}
+							isRejected = true;
+							reject(error);
 						}
 					}
 				}
