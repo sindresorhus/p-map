@@ -79,16 +79,40 @@ export default async function pMap(
 					} else {
 						errors.push(error);
 						resolvingCount--;
-						next();
+
+						// In that case we can't really continue regardless of stopOnError state
+						// since an iterable is likely to continue throwing after it throws once.
+						// If we continue calling next() indefinitely we will likely end up
+						// in an infinite loop of failed iteration.
+						try {
+							next();
+						} catch (error) {
+							if (!isRejected) {
+								isRejected = true;
+								reject(error);
+							}
+						}
 					}
 				}
 			})();
 		};
 
 		for (let index = 0; index < concurrency; index++) {
-			next();
+			// Catch errors from the iterable.next() call
+			// In that case we can't really continue regardless of stopOnError state
+			// since an iterable is likely to continue throwing after it throws once.
+			// If we continue calling next() indefinitely we will likely end up
+			// in an infinite loop of failed iteration.
+			try {
+				next();
+			} catch (error) {
+				if (!isRejected) {
+					isRejected = true;
+					reject(error);
+				}
+			}
 
-			if (isIterableDone) {
+			if (isIterableDone || isRejected) {
 				break;
 			}
 		}

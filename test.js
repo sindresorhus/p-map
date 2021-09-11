@@ -44,21 +44,27 @@ class ThrowingIterator {
 	constructor(max, throwOnIndex) {
 		this._max = max;
 		this._throwOnIndex = throwOnIndex;
+		this.index = 0;
 	}
 
 	[Symbol.iterator]() {
 		let index = 0;
 		const max = this._max;
 		const throwOnIndex = this._throwOnIndex;
+		const obj = this;
 		return {
 			next() {
-				if (index === throwOnIndex) {
-					throw new Error(`throwing on index ${index}`);
-				}
+				try {
+					if (index === throwOnIndex) {
+						throw new Error(`throwing on index ${index}`);
+					}
 
-				const item = {value: index, done: index === max};
-				index++;
-				return item;
+					const item = {value: index, done: index === max};
+					return item;
+				} finally {
+					index++;
+					obj.index = index;
+				}
 			}
 		};
 	}
@@ -162,15 +168,17 @@ test('do not run mapping after stop-on-error happened', async t => {
 test('catches exception from source iterator - 1st item', async t => {
 	const input = new ThrowingIterator(100, 0);
 	const mappedValues = [];
-	await t.throwsAsync(pMap(
+	const error = await t.throwsAsync(pMap(
 		input,
 		async value => {
 			mappedValues.push(value);
 			await delay(100);
 			return value;
 		},
-		{concurrency: 1}
+		{concurrency: 1, stopOnError: true}
 	));
+	t.is(error.message, 'throwing on index 0');
+	t.is(input.index, 1);
 	await delay(300);
 	t.deepEqual(mappedValues, []);
 });
@@ -188,9 +196,10 @@ test('catches exception from source iterator - 2nd item', async t => {
 			await delay(100);
 			return value;
 		},
-		{concurrency: 1}
+		{concurrency: 1, stopOnError: true}
 	));
 	await delay(300);
+	t.is(input.index, 2);
 	t.deepEqual(mappedValues, [0]);
 });
 
@@ -199,7 +208,7 @@ test('catches exception from source iterator - 2nd item', async t => {
 test('catches exception from source iterator - 2nd item after 1st item mapper throw', async t => {
 	const input = new ThrowingIterator(100, 1);
 	const mappedValues = [];
-	await t.throwsAsync(pMap(
+	const error = await t.throwsAsync(pMap(
 		input,
 		async value => {
 			mappedValues.push(value);
@@ -209,5 +218,7 @@ test('catches exception from source iterator - 2nd item after 1st item mapper th
 		{concurrency: 1, stopOnError: false}
 	));
 	await delay(300);
+	t.is(error.message, 'throwing on index 1');
+	t.is(input.index, 2);
 	t.deepEqual(mappedValues, [0]);
 });
