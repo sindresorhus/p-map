@@ -72,6 +72,8 @@ Number of concurrently pending promises returned by `mapper`.
 Type: `boolean`\
 Default: `true`
 
+When set to `true`, the first mapper rejection will be rejected back to the consumer.  Caveat: any already-started async mappers will continue to run until they resolve or reject but they cannot be awaited as their promises are not exposed; in the case of infinite concurrency with sync iterables *all* mappers will be started on startup and will continue after a rejection.  [Issue #51](issues/51) can be implemented to address additional exception and abort use cases.
+
 When set to `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
 
 ### pMapSkip
