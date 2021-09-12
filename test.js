@@ -387,7 +387,7 @@ test('no unhandled rejected promises from mapper throws - infinite concurrency',
 			await delay(100);
 			throw new Error(`Oops! ${value}`);
 		}),
-		{message: 'Some big AggregateError message'}
+		{message: 'Oops! 1'}
 	);
 	// Note: all 3 mappers get invoked, all 3 throw, even with stop on error this
 	// should raise an AggregateError with all 3 exceptions instead of throwing 1
