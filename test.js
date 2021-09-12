@@ -157,7 +157,7 @@ test('pMapSkip', async t => {
 	], async value => value), [1, 2]);
 });
 
-test('do not run mapping after stop-on-error happened', async t => {
+test('all mappers should run when concurrency is infinite, even after stop-on-error happened', async t => {
 	const input = [1, async () => delay(300, {value: 2}), 3];
 	const mappedValues = [];
 	await t.throwsAsync(
@@ -271,7 +271,7 @@ test('asyncIterator - pMapSkip', async t => {
 	]), async value => value), [1, 2]);
 });
 
-test('asyncIterator - do not run mapping after stop-on-error happened', async t => {
+test('asyncIterator - all mappers should run when concurrency is infinite, even after stop-on-error happened', async t => {
 	const input = [1, async () => delay(300, {value: 2}), 3];
 	const mappedValues = [];
 	await t.throwsAsync(
@@ -283,13 +283,13 @@ test('asyncIterator - do not run mapping after stop-on-error happened', async t 
 			mappedValues.push(value);
 			if (value === 1) {
 				await delay(100);
-				throw new Error('Oops!');
+				throw new Error(`Oops! ${value}`);
 			}
-		},
-		{concurrency: 1})
+		}),
+		{message: 'Oops! 1'}
 	);
 	await delay(500);
-	t.deepEqual(mappedValues, [1]);
+	t.deepEqual(mappedValues, [1, 3, 2]);
 });
 
 test('catches exception from source iterator - 1st item', async t => {
@@ -348,4 +348,23 @@ test('catches exception from source iterator - 2nd item after 1st item mapper th
 	t.is(error.message, 'throwing on index 1');
 	t.is(input.index, 2);
 	t.deepEqual(mappedValues, [0]);
+});
+
+test('asyncIterator - get the correct exception after stop-on-error', async t => {
+	const input = [1, async () => delay(200, {value: 2}), async () => delay(300, {value: 3})];
+	const mappedValues = [];
+
+	const task = pMap(new AsyncTestData(input), async value => {
+		if (typeof value === 'function') {
+			value = await value();
+		}
+
+		mappedValues.push(value);
+		// Throw for each item - all should fail and we should get only the first
+		await delay(100);
+		throw new Error(`Oops! ${value}`);
+	});
+	await delay(500);
+	await t.throwsAsync(task, {message: 'Oops! 1'});
+	t.deepEqual(mappedValues, [1, 2, 3]);
 });

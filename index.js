@@ -21,42 +21,43 @@ export default async function pMap(
 		const errors = [];
 		const skippedIndexes = [];
 		let isRejected = false;
+		let isRejectedOrResolved = false;
 		let isIterableDone = false;
 		let resolvingCount = 0;
 		let currentIndex = 0;
-		let asyncIterator = false;
-		let iterator;
-
-		if (iterable[Symbol.iterator] === undefined) {
-			// We've got an async iterable
-			iterator = iterable[Symbol.asyncIterator]();
-			asyncIterator = true;
-		} else {
-			iterator = iterable[Symbol.iterator]();
-		}
+		const iterator = iterable[Symbol.iterator] === undefined ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
 
 		const reject = reason => {
 			isRejected = true;
+			isRejectedOrResolved = true;
 			reject_(reason);
 		};
 
 		const next = async () => {
-			if (isRejected) {
+			if (isRejectedOrResolved) {
 				return;
 			}
 
-			const nextItem = asyncIterator ? await iterator.next() : iterator.next();
+			const nextItem = await iterator.next();
 
 			const index = currentIndex;
 			currentIndex++;
 
+			// Note: iterator.next() can be called many times in parallel.
+			// This can cause multiple calls to this next() function to
+			// receive a `nextItem` with `done === true`.
+			// The shutdown logic that rejects/resolves must be protected
+			// so it runs only one time as the `skippedIndex` logic is
+			// non-idempotent.
 			if (nextItem.done) {
 				isIterableDone = true;
 
-				if (resolvingCount === 0) {
+				if (resolvingCount === 0 && !isRejectedOrResolved) {
 					if (!stopOnError && errors.length > 0) {
 						reject(new AggregateError(errors));
 					} else {
+						isRejectedOrResolved = true;
+
 						for (const skippedIndex of skippedIndexes) {
 							result.splice(skippedIndex, 1);
 						}
@@ -75,7 +76,7 @@ export default async function pMap(
 				try {
 					const element = await nextItem.value;
 
-					if (isRejected) {
+					if (isRejectedOrResolved) {
 						return;
 					}
 
