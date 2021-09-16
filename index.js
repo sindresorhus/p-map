@@ -21,7 +21,7 @@ export default async function pMap(
 		const errors = [];
 		const skippedIndexes = [];
 		let isRejected = false;
-		let isRejectedOrResolved = false;
+		let isResolved = false;
 		let isIterableDone = false;
 		let resolvingCount = 0;
 		let currentIndex = 0;
@@ -29,12 +29,12 @@ export default async function pMap(
 
 		const reject = reason => {
 			isRejected = true;
-			isRejectedOrResolved = true;
+			isResolved = true;
 			reject_(reason);
 		};
 
 		const next = async () => {
-			if (isRejectedOrResolved) {
+			if (isResolved) {
 				return;
 			}
 
@@ -52,11 +52,11 @@ export default async function pMap(
 			if (nextItem.done) {
 				isIterableDone = true;
 
-				if (resolvingCount === 0 && !isRejectedOrResolved) {
+				if (resolvingCount === 0 && !isResolved) {
 					if (!stopOnError && errors.length > 0) {
 						reject(new AggregateError(errors));
 					} else {
-						isRejectedOrResolved = true;
+						isResolved = true;
 
 						for (const skippedIndex of skippedIndexes) {
 							result.splice(skippedIndex, 1);
@@ -76,7 +76,7 @@ export default async function pMap(
 				try {
 					const element = await nextItem.value;
 
-					if (isRejectedOrResolved) {
+					if (isResolved) {
 						return;
 					}
 
