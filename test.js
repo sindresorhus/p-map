@@ -7,9 +7,7 @@ import AggregateError from 'aggregate-error';
 import pMap, {pMapSkip} from './index.js';
 
 const sharedInput = [
-	[async () => {
-		return 10;
-	}, 300],
+	[async () => 10, 300],
 	[20, 200],
 	[30, 100]
 ];
@@ -180,11 +178,11 @@ class AsyncTestData {
 	}
 
 	async * [Symbol.asyncIterator]() {
-		for (let i = 0; i < this.data.length; i++) {
-			// Add a delay between each item iterated
+		for (let index = 0; index < this.data.length; index++) {
+			// Add a delay between each iterated item
 			// eslint-disable-next-line no-await-in-loop
 			await delay(10);
-			yield this.data[i];
+			yield this.data[index];
 		}
 	}
 }
@@ -367,4 +365,16 @@ test('asyncIterator - get the correct exception after stop-on-error', async t =>
 	await delay(500);
 	await t.throwsAsync(task, {message: 'Oops! 1'});
 	t.deepEqual(mappedValues, [1, 2, 3]);
+});
+
+test('incorrect input type', async t => {
+	let mapperCalled = false;
+
+	const task = pMap(123456, async () => {
+		mapperCalled = true;
+		await delay(100);
+	});
+	await delay(500);
+	await t.throwsAsync(task, {message: 'Expected `input` to be either an `Iterable` or `AsyncIterable`, got (number)'});
+	t.false(mapperCalled);
 });

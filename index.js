@@ -9,6 +9,10 @@ export default async function pMap(
 	} = {}
 ) {
 	return new Promise((resolve, reject_) => { // eslint-disable-line promise/param-names
+		if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
+			throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
+		}
+
 		if (typeof mapper !== 'function') {
 			throw new TypeError('Mapper function is required');
 		}
@@ -43,8 +47,8 @@ export default async function pMap(
 			const index = currentIndex;
 			currentIndex++;
 
-			// Note: iterator.next() can be called many times in parallel.
-			// This can cause multiple calls to this next() function to
+			// Note: `iterator.next()` can be called many times in parallel.
+			// This can cause multiple calls to this `next()` function to
 			// receive a `nextItem` with `done === true`.
 			// The shutdown logic that rejects/resolves must be protected
 			// so it runs only one time as the `skippedIndex` logic is
@@ -97,9 +101,9 @@ export default async function pMap(
 						errors.push(error);
 						resolvingCount--;
 
-						// In that case we can't really continue regardless of stopOnError state
+						// In that case we can't really continue regardless of `stopOnError` state
 						// since an iterable is likely to continue throwing after it throws once.
-						// If we continue calling next() indefinitely we will likely end up
+						// If we continue calling `next()` indefinitely we will likely end up
 						// in an infinite loop of failed iteration.
 						try {
 							await next();
@@ -112,11 +116,11 @@ export default async function pMap(
 		};
 
 		// Create the concurrent runners in a detached (non-awaited)
-		// promise.  We need this so we can await the next() calls
+		// promise. We need this so we can await the `next()` calls
 		// to stop creating runners before hitting the concurrency limit
 		// if the iterable has already been marked as done.
 		// NOTE: We *must* do this for async iterators otherwise we'll spin up
-		// infinite next() calls by default and never start the event loop.
+		// infinite `next()` calls by default and never start the event loop.
 		(async () => {
 			for (let index = 0; index < concurrency; index++) {
 				try {

@@ -45,9 +45,9 @@ Returns a `Promise` that is fulfilled when all promises in `input` and ones retu
 
 Type: `AsyncIterable<Promise<unknown> | unknown> | Iterable<Promise<unknown> | unknown>`
 
-Synchronous or asynchronous iterable that is iterated over concurrently, calling the `mapper` function for each element.  Each iterated item is `await`'d before the `mapper` is invoked so the iterable may return a `Promise` that resolves to an item.
+Synchronous or asynchronous iterable that is iterated over concurrently, calling the `mapper` function for each element. Each iterated item is `await`'d before the `mapper` is invoked so the iterable may return a `Promise` that resolves to an item.
 
-Asynchoronous iterables (distinguishing from iterables that return `Promise` that resolves to an item) can be used when the next item may not be ready without waiting for an asynchronous process to complete and/or the end of the iterable may be reached after the asynchornous proces completes (e.g. reading from a remote queue when the queue has reached empty, or reading lines from a stream).
+Asynchronous iterables (different from synchronous iterables that return `Promise` that resolves to an item) can be used when the next item may not be ready without waiting for an asynchronous process to complete and/or the end of the iterable may be reached after the asynchronous process completes. For example, reading from a remote queue when the queue has reached empty, or reading lines from a stream.
 
 #### mapper(element, index)
 
