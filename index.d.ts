@@ -28,7 +28,7 @@ export type Mapper<Element = any, NewElement = unknown> = (
 ) => NewElement | Promise<NewElement>;
 
 /**
-@param input - Iterated over concurrently in the `mapper` function.
+@param input - Synchronous or asynchronous iterable that is iterated over concurrently, calling the `mapper` function for each element. Each iterated item is `await`'d before the `mapper` is invoked so the iterable may return a `Promise` that resolves to an item. Asynchronous iterables (different from synchronous iterables that return `Promise` that resolves to an item) can be used when the next item may not be ready without waiting for an asynchronous process to complete and/or the end of the iterable may be reached after the asynchronous process completes. For example, reading from a remote queue when the queue has reached empty, or reading lines from a stream.
 @param mapper - Function which is called for every item in `input`. Expected to return a `Promise` or value.
 @returns A `Promise` that is fulfilled when all promises in `input` and ones returned from `mapper` are fulfilled, or rejects if any of the promises reject. The fulfilled value is an `Array` of the fulfilled values returned from `mapper` in `input` order.
 
@@ -55,7 +55,7 @@ console.log(result);
 ```
 */
 export default function pMap<Element, NewElement>(
-	input: Iterable<Element>,
+	input: AsyncIterable<Element | Promise<Element>> | Iterable<Element | Promise<Element>>,
 	mapper: Mapper<Element, NewElement>,
 	options?: Options
 ): Promise<Array<Exclude<NewElement, typeof pMapSkip>>>;
