@@ -155,6 +155,19 @@ test('pMapSkip', async t => {
 	], async value => value), [1, 2]);
 });
 
+test('multiple pMapSkips', async t => {
+	t.deepEqual(await pMap([
+		1,
+		pMapSkip,
+		2,
+		pMapSkip,
+		3,
+		pMapSkip,
+		pMapSkip,
+		4
+	], async value => value), [1, 2, 3, 4]);
+});
+
 test('all mappers should run when concurrency is infinite, even after stop-on-error happened', async t => {
 	const input = [1, async () => delay(300, {value: 2}), 3];
 	const mappedValues = [];
@@ -267,6 +280,19 @@ test('asyncIterator - pMapSkip', async t => {
 		pMapSkip,
 		2
 	]), async value => value), [1, 2]);
+});
+
+test('asyncIterator - multiple pMapSkips', async t => {
+	t.deepEqual(await pMap(new AsyncTestData([
+		1,
+		pMapSkip,
+		2,
+		pMapSkip,
+		3,
+		pMapSkip,
+		pMapSkip,
+		4
+	]), async value => value), [1, 2, 3, 4]);
 });
 
 test('asyncIterator - all mappers should run when concurrency is infinite, even after stop-on-error happened', async t => {

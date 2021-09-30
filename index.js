@@ -62,6 +62,9 @@ export default async function pMap(
 					} else {
 						isResolved = true;
 
+						// Delete skipped index from back to front, to support multiple pMapSkips
+						// so use the unshift method when putting index into skippedIndexes.
+						// see line 93
 						for (const skippedIndex of skippedIndexes) {
 							result.splice(skippedIndex, 1);
 						}
@@ -87,7 +90,7 @@ export default async function pMap(
 					const value = await mapper(element, index);
 
 					if (value === pMapSkip) {
-						skippedIndexes.push(index);
+						skippedIndexes.unshift(index);
 					} else {
 						result[index] = value;
 					}
