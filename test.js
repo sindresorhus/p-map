@@ -389,7 +389,7 @@ test('no unhandled rejected promises from mapper throws - infinite concurrency',
 		}),
 		{message: 'Oops! 1'}
 	);
-	// Note: all 3 mappers get invoked, all 3 throw, even with stop on error this
+	// Note: All 3 mappers get invoked, all 3 throw, even with stop on error this
 	// should raise an AggregateError with all 3 exceptions instead of throwing 1
 	// exception and hiding the other 2.
 	t.deepEqual(mappedValues, [1, 2, 3]);
