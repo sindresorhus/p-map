@@ -72,8 +72,8 @@ export default async function pMap(
 					const pureResult = [];
 
 					// Support multiple pMapSkips
-					// eslint-disable-next-line unicorn/no-for-loop
-					for (let index = 0; index < result.length; index++) {
+					const resultIterator = result.keys();
+					for (const index of resultIterator) {
 						if (skippedIndexesMap.get(index) === pMapSkip) {
 							continue;
 						}
