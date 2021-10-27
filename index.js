@@ -72,13 +72,12 @@ export default async function pMap(
 					const pureResult = [];
 
 					// Support multiple pMapSkips
-					const resultIterator = result.keys();
-					for (const index of resultIterator) {
+					for (const [index, value] of result.entries()) {
 						if (skippedIndexesMap.get(index) === pMapSkip) {
 							continue;
 						}
 
-						pureResult.push(result[index]);
+						pureResult.push(value);
 					}
 
 					resolve(pureResult);
