@@ -23,7 +23,7 @@ export default async function pMap(
 
 		const result = [];
 		const errors = [];
-		const skippedIndexes = [];
+		const skippedIndexesMap = new Map();
 		let isRejected = false;
 		let isResolved = false;
 		let isIterableDone = false;
@@ -59,15 +59,28 @@ export default async function pMap(
 				if (resolvingCount === 0 && !isResolved) {
 					if (!stopOnError && errors.length > 0) {
 						reject(new AggregateError(errors));
-					} else {
-						isResolved = true;
+						return;
+					}
 
-						for (const skippedIndex of skippedIndexes) {
-							result.splice(skippedIndex, 1);
+					isResolved = true;
+
+					if (!skippedIndexesMap.size) {
+						resolve(result);
+						return;
+					}
+
+					const pureResult = [];
+
+					// Support multiple `pMapSkip`'s.
+					for (const [index, value] of result.entries()) {
+						if (skippedIndexesMap.get(index) === pMapSkip) {
+							continue;
 						}
 
-						resolve(result);
+						pureResult.push(value);
 					}
+
+					resolve(pureResult);
 				}
 
 				return;
@@ -86,11 +99,12 @@ export default async function pMap(
 
 					const value = await mapper(element, index);
 
+					// Use Map to stage the index of the element.
 					if (value === pMapSkip) {
-						skippedIndexes.push(index);
-					} else {
-						result[index] = value;
+						skippedIndexesMap.set(index, value);
 					}
+
+					result[index] = value;
 
 					resolvingCount--;
 					await next();
