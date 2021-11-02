@@ -71,7 +71,7 @@ export default async function pMap(
 
 					const pureResult = [];
 
-					// Support multiple pMapSkips
+					// Support multiple `pMapSkip`'s.
 					for (const [index, value] of result.entries()) {
 						if (skippedIndexesMap.get(index) === pMapSkip) {
 							continue;
