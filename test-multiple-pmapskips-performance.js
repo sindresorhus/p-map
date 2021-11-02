@@ -24,14 +24,14 @@ test('multiple pMapSkips - algorithmic complexity', async t => {
 	}
 
 	for (let index = 0; index < testDurationsMS.length - 1; index++) {
-		// Time for 10x more items should take between 9x and 11x more time
+		// Time for 10x more items should take between 9x and 11x more time.
 		const smallerDuration = testDurationsMS[index];
 		const longerDuration = testDurationsMS[index + 1];
 
 		// The longer test needs to be a little longer and also not 10x more than the
-		// shorter test.  This is not perfect... there is some fluctuation.
-		// The idea here is to catch a regression that makes pMapSkip handling O(n^2)
-		// on the number of pMapSkip items in the input
+		// shorter test. This is not perfect... there is some fluctuation.
+		// The idea here is to catch a regression that makes `pMapSkip` handling O(n^2)
+		// on the number of `pMapSkip` items in the input.
 		t.true(inRange(longerDuration, {start: 1.2 * smallerDuration, end: 15 * smallerDuration}));
 	}
 });
