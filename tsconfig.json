@@ -1,0 +1,12 @@
+{
+    "compilerOptions": {
+      "target": "es2015",
+      "module": "es2015",
+      "declaration": true,
+      "outDir": ".",
+      "strict": true,
+      "moduleResolution": "node"
+    },
+    "include": ["index.ts"],
+    "exclude": ["node_modules"]
+}

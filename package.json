@@ -12,11 +12,15 @@
 	},
 	"type": "module",
 	"exports": "./index.js",
+	"types": "./index.d.ts",
 	"engines": {
 		"node": ">=12"
 	},
 	"scripts": {
-		"test": "xo && ava && tsd"
+		"build": "tsc -p .",
+		"test": "build && xo && ava && tsd",
+		"prepare" : "npm run build",
+		"prepublishOnly" : "npm test"
 	},
 	"files": [
 		"index.js",
@@ -50,6 +54,7 @@
 		"random-int": "^3.0.0",
 		"time-span": "^5.0.0",
 		"tsd": "^0.14.0",
+		"typescript": "^4.5.4",
 		"xo": "^0.38.2"
 	}
 }
