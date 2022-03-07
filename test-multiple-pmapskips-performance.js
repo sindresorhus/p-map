@@ -13,7 +13,7 @@ function generateSkipPerformanceData(length) {
 }
 
 test('multiple pMapSkips - algorithmic complexity', async t => {
-	const testData = [generateSkipPerformanceData(1000), generateSkipPerformanceData(10000), generateSkipPerformanceData(100000)];
+	const testData = [generateSkipPerformanceData(1000), generateSkipPerformanceData(10_000), generateSkipPerformanceData(100_000)];
 	const testDurationsMS = [];
 
 	for (const data of testData) {

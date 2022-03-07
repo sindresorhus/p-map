@@ -9,7 +9,7 @@ import pMap, {pMapSkip} from './index.js';
 const sharedInput = [
 	[async () => 10, 300],
 	[20, 200],
-	[30, 100]
+	[30, 100],
 ];
 
 const errorInput1 = [
@@ -20,7 +20,7 @@ const errorInput1 = [
 	}, 10],
 	[() => {
 		throw new Error('bar');
-	}, 10]
+	}, 10],
 ];
 
 const errorInput2 = [
@@ -31,7 +31,7 @@ const errorInput2 = [
 	[30, 100],
 	[() => {
 		throw new Error('foo');
-	}, 10]
+	}, 10],
 ];
 
 const mapper = async ([value, ms]) => {
@@ -72,7 +72,7 @@ class ThrowingIterator {
 			// eslint is wrong - bind is needed else the next() call cannot update
 			// this.index, which we need to track how many times the iterator was called
 			// eslint-disable-next-line no-extra-bind
-			}).bind(this)
+			}).bind(this),
 		};
 	}
 }
@@ -151,7 +151,7 @@ test('pMapSkip', async t => {
 	t.deepEqual(await pMap([
 		1,
 		pMapSkip,
-		2
+		2,
 	], async value => value), [1, 2]);
 });
 
@@ -164,7 +164,7 @@ test('multiple pMapSkips', async t => {
 		3,
 		pMapSkip,
 		pMapSkip,
-		4
+		4,
 	], async value => value), [1, 2, 3, 4]);
 });
 
@@ -173,7 +173,7 @@ test('all pMapSkips', async t => {
 		pMapSkip,
 		pMapSkip,
 		pMapSkip,
-		pMapSkip
+		pMapSkip,
 	], async value => value), []);
 });
 
@@ -188,7 +188,7 @@ test('all mappers should run when concurrency is infinite, even after stop-on-er
 				await delay(100);
 				throw new Error('Oops!');
 			}
-		})
+		}),
 	);
 	await delay(500);
 	t.deepEqual(mappedValues, [1, 3, 2]);
@@ -287,7 +287,7 @@ test('asyncIterator - pMapSkip', async t => {
 	t.deepEqual(await pMap(new AsyncTestData([
 		1,
 		pMapSkip,
-		2
+		2,
 	]), async value => value), [1, 2]);
 });
 
@@ -300,7 +300,7 @@ test('asyncIterator - multiple pMapSkips', async t => {
 		3,
 		pMapSkip,
 		pMapSkip,
-		4
+		4,
 	]), async value => value), [1, 2, 3, 4]);
 });
 
@@ -309,7 +309,7 @@ test('asyncIterator - all pMapSkips', async t => {
 		pMapSkip,
 		pMapSkip,
 		pMapSkip,
-		pMapSkip
+		pMapSkip,
 	]), async value => value), []);
 });
 
@@ -328,7 +328,7 @@ test('asyncIterator - all mappers should run when concurrency is infinite, even 
 				throw new Error(`Oops! ${value}`);
 			}
 		}),
-		{message: 'Oops! 1'}
+		{message: 'Oops! 1'},
 	);
 	await delay(500);
 	t.deepEqual(mappedValues, [1, 3, 2]);
@@ -344,7 +344,7 @@ test('catches exception from source iterator - 1st item', async t => {
 			await delay(100);
 			return value;
 		},
-		{concurrency: 1, stopOnError: true}
+		{concurrency: 1, stopOnError: true},
 	));
 	t.is(error.message, 'throwing on index 0');
 	t.is(input.index, 1);
@@ -365,7 +365,7 @@ test('catches exception from source iterator - 2nd item', async t => {
 			await delay(100);
 			return value;
 		},
-		{concurrency: 1, stopOnError: true}
+		{concurrency: 1, stopOnError: true},
 	));
 	await delay(300);
 	t.is(input.index, 2);
@@ -384,7 +384,7 @@ test('catches exception from source iterator - 2nd item after 1st item mapper th
 			await delay(100);
 			throw new Error('mapper threw error');
 		},
-		{concurrency: 1, stopOnError: false}
+		{concurrency: 1, stopOnError: false},
 	));
 	await delay(300);
 	t.is(error.message, 'throwing on index 1');
@@ -414,7 +414,7 @@ test('asyncIterator - get the correct exception after stop-on-error', async t =>
 test('incorrect input type', async t => {
 	let mapperCalled = false;
 
-	const task = pMap(123456, async () => {
+	const task = pMap(123_456, async () => {
 		mapperCalled = true;
 		await delay(100);
 	});
@@ -432,7 +432,7 @@ test('no unhandled rejected promises from mapper throws - infinite concurrency',
 			await delay(100);
 			throw new Error(`Oops! ${value}`);
 		}),
-		{message: 'Oops! 1'}
+		{message: 'Oops! 1'},
 	);
 	// Note: All 3 mappers get invoked, all 3 throw, even with `{stopOnError: true}` this
 	// should raise an AggregateError with all 3 exceptions instead of throwing 1
@@ -450,7 +450,11 @@ test('no unhandled rejected promises from mapper throws - concurrency 1', async 
 			throw new Error(`Oops! ${value}`);
 		},
 		{concurrency: 1}),
-		{message: 'Oops! 1'}
+		{message: 'Oops! 1'},
 	);
 	t.deepEqual(mappedValues, [1]);
+});
+
+test('invalid mapper', async t => {
+	await t.throwsAsync(pMap([], 'invalid mapper', {concurrency: 2}), {instanceOf: TypeError});
 });

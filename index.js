@@ -5,10 +5,10 @@ export default async function pMap(
 	mapper,
 	{
 		concurrency = Number.POSITIVE_INFINITY,
-		stopOnError = true
-	} = {}
+		stopOnError = true,
+	} = {},
 ) {
-	return new Promise((resolve, reject_) => { // eslint-disable-line promise/param-names
+	return new Promise((resolve, reject_) => {
 		if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
 			throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
 		}
@@ -64,7 +64,7 @@ export default async function pMap(
 
 					isResolved = true;
 
-					if (!skippedIndexesMap.size) {
+					if (skippedIndexesMap.size === 0) {
 						resolve(result);
 						return;
 					}

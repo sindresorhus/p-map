@@ -4,13 +4,13 @@ import pMap, {Options, Mapper, pMapSkip} from './index.js';
 const sites = [
 	'https://sindresorhus.com',
 	'https://avajs.dev',
-	'https://github.com'
+	'https://github.com',
 ];
 
 const numbers = [
 	0,
 	1,
-	2
+	2,
 ];
 
 const asyncMapper = async (site: string): Promise<string> => site;
