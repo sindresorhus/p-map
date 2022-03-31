@@ -1,11 +1,28 @@
 import AggregateError from 'aggregate-error';
 
+/**
+An error to be thrown when the request is aborted by AbortController.
+DOMException is thrown instead of this Error when DOMException is available.
+*/
+export class AbortError extends Error {
+	constructor(message) {
+		super();
+		this.name = 'AbortError';
+		this.message = message;
+	}
+}
+
+const getDOMException = errorMessage => globalThis.DOMException === undefined
+	? new AbortError(errorMessage)
+	: new DOMException(errorMessage);
+
 export default async function pMap(
 	iterable,
 	mapper,
 	{
 		concurrency = Number.POSITIVE_INFINITY,
 		stopOnError = true,
+		signal = undefined,
 	} = {},
 ) {
 	return new Promise((resolve, reject_) => {
@@ -36,6 +53,16 @@ export default async function pMap(
 			isResolved = true;
 			reject_(reason);
 		};
+
+		if (signal) {
+			signal.addEventListener('abort', () => {
+				const reason = signal.reason === undefined
+					? getDOMException('This operation was aborted.')
+					: signal.reason;
+
+				reject(reason instanceof Error ? reason : getDOMException(reason));
+			});
+		}
 
 		const next = async () => {
 			if (isResolved) {
