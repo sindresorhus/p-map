@@ -473,5 +473,17 @@ if (globalThis.AbortController !== undefined) {
 			name: 'AbortError',
 		});
 	});
+
+	test('already aborted signal', async t => {
+		const abortController = new AbortController();
+
+		abortController.abort();
+
+		const mapper = async value => value;
+
+		await t.throwsAsync(pMap([delay(1000), new AsyncTestData(100), 100], mapper, {signal: abortController.signal}), {
+			name: 'AbortError',
+		});
+	});
 }
 

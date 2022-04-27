@@ -16,6 +16,14 @@ const getDOMException = errorMessage => globalThis.DOMException === undefined
 	? new AbortError(errorMessage)
 	: new DOMException(errorMessage);
 
+const getAbortedReason = signal => {
+	const reason = signal.reason === undefined
+		? getDOMException('This operation was aborted.')
+		: signal.reason;
+
+	return reason instanceof Error ? reason : getDOMException(reason);
+};
+
 export default async function pMap(
 	iterable,
 	mapper,
@@ -55,12 +63,12 @@ export default async function pMap(
 		};
 
 		if (signal) {
-			signal.addEventListener('abort', () => {
-				const reason = signal.reason === undefined
-					? getDOMException('This operation was aborted.')
-					: signal.reason;
+			if (signal.aborted) {
+				reject(getAbortedReason(signal));
+			}
 
-				reject(reason instanceof Error ? reason : getDOMException(reason));
+			signal.addEventListener('abort', () => {
+				reject(getAbortedReason(signal));
 			});
 		}
 
