@@ -486,4 +486,3 @@ if (globalThis.AbortController !== undefined) {
 		});
 	});
 }
-
