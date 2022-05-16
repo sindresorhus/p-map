@@ -36,7 +36,7 @@ export default async function pMap(
 	{
 		concurrency = Number.POSITIVE_INFINITY,
 		stopOnError = true,
-		signal = undefined,
+		signal,
 	} = {},
 ) {
 	return new Promise((resolve, reject_) => {
