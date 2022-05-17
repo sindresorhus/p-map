@@ -99,7 +99,7 @@ setTimeout(() => {
 const mapper = async value => value;
 
 await pMap([delay(1000), delay(1000)], mapper, {signal: abortController.signal});
-//=> Throws AbortError (DOMException) after 500ms.
+// Throws AbortError (DOMException) after 500 ms.
 ```
 
 ### pMapSkip
