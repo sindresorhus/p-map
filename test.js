@@ -458,3 +458,31 @@ test('no unhandled rejected promises from mapper throws - concurrency 1', async 
 test('invalid mapper', async t => {
 	await t.throwsAsync(pMap([], 'invalid mapper', {concurrency: 2}), {instanceOf: TypeError});
 });
+
+if (globalThis.AbortController !== undefined) {
+	test('abort by AbortController', async t => {
+		const abortController = new AbortController();
+
+		setTimeout(() => {
+			abortController.abort();
+		}, 100);
+
+		const mapper = async value => value;
+
+		await t.throwsAsync(pMap([delay(1000), new AsyncTestData(100), 100], mapper, {signal: abortController.signal}), {
+			name: 'AbortError',
+		});
+	});
+
+	test('already aborted signal', async t => {
+		const abortController = new AbortController();
+
+		abortController.abort();
+
+		const mapper = async value => value;
+
+		await t.throwsAsync(pMap([delay(1000), new AsyncTestData(100), 100], mapper, {signal: abortController.signal}), {
+			name: 'AbortError',
+		});
+	});
+}
