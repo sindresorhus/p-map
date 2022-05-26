@@ -3,7 +3,6 @@ import delay from 'delay';
 import inRange from 'in-range';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
-import AggregateError from 'aggregate-error';
 import pMap, {pMapSkip} from './index.js';
 
 const sharedInput = [

@@ -13,7 +13,7 @@
 	"type": "module",
 	"exports": "./index.js",
 	"engines": {
-		"node": ">=12"
+		"node": ">=16"
 	},
 	"scripts": {
 		"test": "xo && ava && tsd"
@@ -40,9 +40,6 @@
 		"parallel",
 		"bluebird"
 	],
-	"dependencies": {
-		"aggregate-error": "^4.0.0"
-	},
 	"devDependencies": {
 		"ava": "^4.1.0",
 		"delay": "^5.0.0",

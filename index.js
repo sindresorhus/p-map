@@ -1,5 +1,3 @@
-import AggregateError from 'aggregate-error';
-
 /**
 An error to be thrown when the request is aborted by AbortController.
 DOMException is thrown instead of this Error when DOMException is available.
