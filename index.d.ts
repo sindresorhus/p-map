@@ -44,6 +44,8 @@ export interface Options {
 	readonly signal?: AbortSignal;
 }
 
+type MaybePromise<T> = T | Promise<T>;
+
 /**
 Function which is called for every item in `input`. Expected to return a `Promise` or value.
 
@@ -53,7 +55,7 @@ Function which is called for every item in `input`. Expected to return a `Promis
 export type Mapper<Element = any, NewElement = unknown> = (
 	element: Element,
 	index: number
-) => NewElement | Promise<NewElement>;
+) => MaybePromise<NewElement | typeof pMapSkip>;
 
 /**
 @param input - Synchronous or asynchronous iterable that is iterated over concurrently, calling the `mapper` function for each element. Each iterated item is `await`'d before the `mapper` is invoked so the iterable may return a `Promise` that resolves to an item. Asynchronous iterables (different from synchronous iterables that return `Promise` that resolves to an item) can be used when the next item may not be ready without waiting for an asynchronous process to complete and/or the end of the iterable may be reached after the asynchronous process completes. For example, reading from a remote queue when the queue has reached empty, or reading lines from a stream.
