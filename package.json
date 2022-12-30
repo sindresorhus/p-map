@@ -41,7 +41,8 @@
 		"bluebird"
 	],
 	"dependencies": {
-		"aggregate-error": "^4.0.0"
+		"aggregate-error": "^4.0.0",
+		"deferred-async-iterator": "^3.0.0"
 	},
 	"devDependencies": {
 		"ava": "^4.1.0",

@@ -1,4 +1,5 @@
 import AggregateError from 'aggregate-error';
+import createDeferredAsyncIterator from 'deferred-async-iterator';
 
 /**
 An error to be thrown when the request is aborted by AbortController.
@@ -192,6 +193,105 @@ export default async function pMap(
 			}
 		})();
 	});
+}
+
+export function pMapIterable(
+	iterable,
+	mapper,
+	{
+		concurrency = Number.POSITIVE_INFINITY,
+	} = {},
+) {
+	if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
+		throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
+	}
+
+	if (typeof mapper !== 'function') {
+		throw new TypeError('Mapper function is required');
+	}
+
+	if (!((Number.isSafeInteger(concurrency) || concurrency === Number.POSITIVE_INFINITY) && concurrency >= 1)) {
+		throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
+	}
+
+	return {
+		[Symbol.asyncIterator]() {
+			const {next, nextError, complete, onCleanup, iterator} = createDeferredAsyncIterator();
+
+			const iterator_ = iterable[Symbol.iterator] === undefined ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
+
+			let currentIndex = 0;
+			let isFlushing = false;
+			let isComplete = false;
+
+			(async () => {
+				await onCleanup;
+				isComplete = true;
+			})();
+
+			const valuePromises = [];
+
+			async function flushValues() {
+				if (isFlushing) {
+					return;
+				}
+
+				isFlushing = true;
+
+				for await (const promise of valuePromises) {
+					try {
+						const value = await promise;
+
+						if (value === pMapSkip) {
+							continue;
+						}
+
+						next(value);
+					} catch (error) {
+						nextError(error);
+					}
+				}
+
+				isFlushing = false;
+			}
+
+			async function nextItem() {
+				if (isComplete) {
+					return;
+				}
+
+				const {done, value} = await iterator_.next();
+
+				if (isComplete) {
+					return;
+				}
+
+				const index = currentIndex;
+				currentIndex++;
+
+				if (done) {
+					isComplete = true;
+					return;
+				}
+
+				valuePromises.push(mapper(value, index));
+				flushValues();
+
+				await nextItem();
+			}
+
+			(async () => {
+				for (let index = 0; index < concurrency; index++) {
+					// eslint-disable-next-line no-await-in-loop
+					await nextItem();
+				}
+
+				complete();
+			})();
+
+			return iterator;
+		},
+	};
 }
 
 export const pMapSkip = Symbol('skip');

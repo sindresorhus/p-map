@@ -4,7 +4,7 @@ import inRange from 'in-range';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
 import AggregateError from 'aggregate-error';
-import pMap, {pMapSkip} from './index.js';
+import pMap, {pMapIterable, pMapSkip} from './index.js';
 
 const sharedInput = [
 	[async () => 10, 300],
@@ -69,9 +69,9 @@ class ThrowingIterator {
 					index++;
 					this.index = index;
 				}
-			// eslint is wrong - bind is needed else the next() call cannot update
-			// this.index, which we need to track how many times the iterator was called
-			// eslint-disable-next-line no-extra-bind
+				// eslint is wrong - bind is needed else the next() call cannot update
+				// this.index, which we need to track how many times the iterator was called
+				// eslint-disable-next-line no-extra-bind
 			}).bind(this),
 		};
 	}
@@ -486,3 +486,17 @@ if (globalThis.AbortController !== undefined) {
 		});
 	});
 }
+
+async function collectAsyncIterable(asyncIterable) {
+	const values = [];
+
+	for await (const value of asyncIterable) {
+		values.push(value);
+	}
+
+	return values;
+}
+
+test('pMapIterable', async t => {
+	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapper)), [10, 20, 30]);
+});
