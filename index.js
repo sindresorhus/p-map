@@ -97,7 +97,9 @@ export default async function pMap(
 
 				if (resolvingCount === 0 && !isResolved) {
 					if (!stopOnError && errors.length > 0) {
+						/* eslint-disable unicorn/error-message */
 						reject(new AggregateError(errors));
+						/* eslint-enable unicorn/error-message */
 						return;
 					}
 
