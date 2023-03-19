@@ -199,7 +199,7 @@ export function pMapIterable(
 	mapper,
 	{
 		concurrency = Number.POSITIVE_INFINITY,
-		backpressure,
+		backpressure = concurrency,
 	} = {},
 ) {
 	if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
