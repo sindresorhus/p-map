@@ -1,5 +1,4 @@
 import AggregateError from 'aggregate-error';
-import createDeferredAsyncIterator from 'deferred-async-iterator';
 
 /**
 An error to be thrown when the request is aborted by AbortController.
@@ -49,7 +48,9 @@ export default async function pMap(
 			throw new TypeError('Mapper function is required');
 		}
 
-		if (!((Number.isSafeInteger(concurrency) || concurrency === Number.POSITIVE_INFINITY) && concurrency >= 1)) {
+
+
+		if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
 			throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
 		}
 
@@ -200,6 +201,7 @@ export function pMapIterable(
 	mapper,
 	{
 		concurrency = Number.POSITIVE_INFINITY,
+		backpressure,
 	} = {},
 ) {
 	if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
@@ -210,88 +212,103 @@ export function pMapIterable(
 		throw new TypeError('Mapper function is required');
 	}
 
-	if (!((Number.isSafeInteger(concurrency) || concurrency === Number.POSITIVE_INFINITY) && concurrency >= 1)) {
+	if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
 		throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
+	}
+
+	if (!((Number.isSafeInteger(backpressure) && backpressure >= concurrency) || backpressure === Number.POSITIVE_INFINITY)) {
+		throw new TypeError(`Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${typeof backpressure})`);
 	}
 
 	return {
 		[Symbol.asyncIterator]() {
-			const {next, nextError, complete, onCleanup, iterator} = createDeferredAsyncIterator();
+			let isDone = false;
+			let pendingQueue = [];
+			let waitingQueue = [];
+			let valueQueue = [];
+			let valuePromises = [];
 
-			const iterator_ = iterable[Symbol.iterator] === undefined ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
+			const iterator = typeof iterable[Symbol.asyncIterator] === 'undefined' ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
-			let currentIndex = 0;
-			let isFlushing = false;
-			let isComplete = false;
+			function tryToContinue() {
+				while (pendingQueue.length < concurrency && valueQueue.length + waitingQueue.length + pendingQueue.length < backpressure && !isDone) {
+					const promise = (async () => {
+						try {
+							const {done, value} = await iterator.next();
 
-			(async () => {
-				await onCleanup;
-				isComplete = true;
-			})();
+							if (done) {
+								isDone = true;
+								return;
+							}
 
-			const valuePromises = [];
+							const result = await mapper(value);
 
-			async function flushValues() {
-				if (isFlushing) {
-					return;
+							const index = pendingQueue.indexOf(promise);
+
+							pendingQueue.splice(index, 1);
+							tryToContinue();
+
+							if (result === pMapSkip) {
+								waitingQueue.splice(index, 1);
+							} else {
+								waitingQueue[index] = {value: result};
+							}
+						} catch (error) {
+							const index = pendingQueue.indexOf(promise);
+
+							pendingQueue.splice(index, 1);
+
+							waitingQueue[index] = {error};
+						} finally {
+							while (waitingQueue[0]) {
+								const result = waitingQueue.shift();
+
+								if (valuePromises.length > 0) {
+									const {resolve, reject} = valuePromises.shift();
+
+									if (result.error) {
+										reject(result.error);
+									} else {
+										resolve(result.result);
+									}
+								} else {
+									valueQueue.push(result);
+								}
+							}
+						}
+					})()
+
+					pendingQueue.push(promise);
 				}
+			}
 
-				isFlushing = true;
+			tryToContinue();
 
-				for await (const promise of valuePromises) {
-					try {
-						const value = await promise;
+			return {
+				async next() {
+					if (isDone && pendingQueue.length === 0 && waitingQueue === 0 && valueQueue.length === 0) {
+						return {done: true};
+					}
 
-						if (value === pMapSkip) {
-							continue;
+					if (valueQueue.length > 0) {
+						const {value, error} = valueQueue.shift();
+
+						tryToContinue();
+
+						if (error) {
+							throw error;
 						}
 
-						next(value);
-					} catch (error) {
-						nextError(error);
+						return {done: false, value};
 					}
-				}
 
-				isFlushing = false;
+					return new Promise((resolve, reject) => {
+						valuePromises.push({resolve, reject});
+					})
+				}
 			}
-
-			async function nextItem() {
-				if (isComplete) {
-					return;
-				}
-
-				const {done, value} = await iterator_.next();
-
-				if (isComplete) {
-					return;
-				}
-
-				const index = currentIndex;
-				currentIndex++;
-
-				if (done) {
-					isComplete = true;
-					return;
-				}
-
-				valuePromises.push(mapper(value, index));
-				flushValues();
-
-				await nextItem();
-			}
-
-			(async () => {
-				for (let index = 0; index < concurrency; index++) {
-					// eslint-disable-next-line no-await-in-loop
-					await nextItem();
-				}
-
-				complete();
-			})();
-
-			return iterator;
 		},
-	};
+	}
 }
 
 export const pMapSkip = Symbol('skip');
