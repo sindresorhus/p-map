@@ -48,8 +48,6 @@ export default async function pMap(
 			throw new TypeError('Mapper function is required');
 		}
 
-
-
 		if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
 			throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
 		}
@@ -223,10 +221,10 @@ export function pMapIterable(
 	return {
 		[Symbol.asyncIterator]() {
 			let isDone = false;
-			let pendingQueue = [];
-			let waitingQueue = [];
-			let valueQueue = [];
-			let valuePromises = [];
+			const pendingQueue = [];
+			const waitingQueue = [];
+			const valueQueue = [];
+			const valuePromises = [];
 
 			const iterator = typeof iterable[Symbol.asyncIterator] === 'undefined' ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
@@ -276,7 +274,7 @@ export function pMapIterable(
 								}
 							}
 						}
-					})()
+					})();
 
 					pendingQueue.push(promise);
 				}
@@ -304,11 +302,11 @@ export function pMapIterable(
 
 					return new Promise((resolve, reject) => {
 						valuePromises.push({resolve, reject});
-					})
-				}
-			}
+					});
+				},
+			};
 		},
-	}
+	};
 }
 
 export const pMapSkip = Symbol('skip');
