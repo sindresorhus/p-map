@@ -224,7 +224,7 @@ export function pMapIterable(
 			const valueQueue = [];
 			const valuePromises = [];
 
-			const iterator = typeof iterable[Symbol.asyncIterator] === 'undefined' ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
+			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
 			function tryToContinue() {
 				while (pendingQueue.length < concurrency && valueQueue.length + waitingQueue.length + pendingQueue.length < backpressure && !isDone) {

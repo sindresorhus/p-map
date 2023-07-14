@@ -7,7 +7,7 @@ type BaseOptions = {
 	@default Infinity
 	*/
 	readonly concurrency?: number;
-}
+};
 
 export type Options = BaseOptions & {
 	/**
@@ -51,7 +51,7 @@ export type IterableOptions = BaseOptions & {
 	@default concurrency
 	*/
 	readonly backpressure?: number;
-}
+};
 
 type MaybePromise<T> = T | Promise<T>;
 
