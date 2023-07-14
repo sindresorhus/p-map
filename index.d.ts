@@ -1,4 +1,4 @@
-export interface Options {
+interface BaseOptions {
 	/**
 	Number of concurrently pending promises returned by `mapper`.
 
@@ -7,7 +7,9 @@ export interface Options {
 	@default Infinity
 	*/
 	readonly concurrency?: number;
+}
 
+export interface Options extends BaseOptions {
 	/**
 	When `true`, the first mapper rejection will be rejected back to the consumer.
 
@@ -42,6 +44,15 @@ export interface Options {
 	```
 	*/
 	readonly signal?: AbortSignal;
+}
+
+export interface IterableOptions {
+	/**
+	Maximum number of promises returned by `mapper` that have resolved but not yet collected by the consumer of the async iterable. Calls to `mapper` will be limited so that there is never too much backpressure.
+
+	@default concurrency
+	*/
+	readonly backpressure?: number;
 }
 
 type MaybePromise<T> = T | Promise<T>;
@@ -89,6 +100,27 @@ export default function pMap<Element, NewElement>(
 	mapper: Mapper<Element, NewElement>,
 	options?: Options
 ): Promise<Array<Exclude<NewElement, typeof pMapSkip>>>;
+
+/**
+@param input - Synchronous or asynchronous iterable that is iterated over concurrently, calling the `mapper` function for each element. Each iterated item is `await`'d before the `mapper` is invoked so the iterable may return a `Promise` that resolves to an item. Asynchronous iterables (different from synchronous iterables that return `Promise` that resolves to an item) can be used when the next item may not be ready without waiting for an asynchronous process to complete and/or the end of the iterable may be reached after the asynchronous process completes. For example, reading from a remote queue when the queue has reached empty, or reading lines from a stream.
+@param mapper - Function which is called for every item in `input`. Expected to return a `Promise` or value.
+@returns An async iterable that streams each return value from `mapper` in order.
+
+@example
+```
+import {pMapIterable} from 'p-map';
+
+// Multiple posts are fetched concurrently, with limited concurrency and backpressure
+for await (const post of pMapIterable(postIds, getPostMetadata)) {
+	console.log(post);
+};
+```
+*/
+export default function pMapIterable<Element, NewElement>(
+	input: AsyncIterable<Element | Promise<Element>> | Iterable<Element | Promise<Element>>,
+	mapper: Mapper<Element, NewElement>,
+	options?: IterableOptions
+): AsyncIterable<Exclude<NewElement, typeof pMapSkip>>;
 
 /**
 Return this value from a `mapper` function to skip including the value in the returned array.

@@ -41,6 +41,19 @@ console.log(result);
 
 Returns a `Promise` that is fulfilled when all promises in `input` and ones returned from `mapper` are fulfilled, or rejects if any of the promises reject. The fulfilled value is an `Array` of the fulfilled values returned from `mapper` in `input` order.
 
+### pMapIterable(input, mapper, options?)
+
+Returns an async iterable that streams each return value from `mapper` in order.
+
+```js
+import {pMapIterable} from 'p-map';
+
+// Multiple posts are fetched concurrently, with limited concurrency and backpressure
+for await (const post of pMapIterable(postIds, getPostMetadata)) {
+	console.log(post);
+};
+```
+
 #### input
 
 Type: `AsyncIterable<Promise<unknown> | unknown> | Iterable<Promise<unknown> | unknown>`
@@ -67,7 +80,19 @@ Minimum: `1`
 
 Number of concurrently pending promises returned by `mapper`.
 
+##### backpressure
+
+**Only for `pMapInterable`**
+
+Type: `number` *(Integer)*\
+Default: `concurrency`\
+Minimum: `concurrency`
+
+Maximum number of promises returned by `mapper` that have resolved but not yet collected by the consumer of the async iterable. Calls to `mapper` will be limited so that there is never too much backpressure.
+
 ##### stopOnError
+
+**Only for `pMap`**
 
 Type: `boolean`\
 Default: `true`
@@ -79,6 +104,8 @@ When `false`, instead of stopping when a promise rejects, it will wait for all t
 Caveat: When `true`, any already-started async mappers will continue to run until they resolve or reject. In the case of infinite concurrency with sync iterables, *all* mappers are invoked on startup and will continue after the first rejection. [Issue #51](https://github.com/sindresorhus/p-map/issues/51) can be implemented for abort control.
 
 ##### signal
+
+**Only for `pMap`**
 
 Type: [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal)
 
