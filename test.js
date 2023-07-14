@@ -499,3 +499,7 @@ async function collectAsyncIterable(asyncIterable) {
 test('pMapIterable', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapper)), [10, 20, 30]);
 });
+
+test('pMapIterable - empty', async t => {
+	t.deepEqual(await collectAsyncIterable(pMapIterable([], mapper)), []);
+});

@@ -226,55 +226,68 @@ export function pMapIterable(
 
 			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
+			function tryToFlushWaitingQueue() {
+				while (waitingQueue[0]) {
+					const result = waitingQueue.shift();
+
+					if (valuePromises.length > 0) {
+						const {resolve, reject} = valuePromises.shift();
+
+						if (result.done) {
+							resolve({done: true});
+						} else if (result.error) {
+							reject(result.error);
+						} else {
+							resolve({done: false, value: result.value});
+						}
+					} else {
+						valueQueue.push(result);
+					}
+				}
+			}
+
 			async function tryToContinue() {
 				while (pendingQueue.length < concurrency && valueQueue.length + waitingQueue.length + pendingQueue.length < backpressure && !isDone) {
-					const {done, value} = await iterator.next(); // eslint-disable-line no-await-in-loop
+					try {
+						const {done, value} = await iterator.next(); // eslint-disable-line no-await-in-loop
 
-					if (done) {
-						isDone = true;
-						return;
-					}
-
-					const promise = (async () => {
-						try {
-							const result = await mapper(value);
-
-							const index = pendingQueue.indexOf(promise);
-
-							pendingQueue.splice(index, 1);
-							tryToContinue();
-
-							if (result === pMapSkip) {
-								waitingQueue.splice(index, 1);
-							} else {
-								waitingQueue[index] = {value: result};
-							}
-						} catch (error) {
-							const index = pendingQueue.indexOf(promise);
-
-							pendingQueue.splice(index, 1);
-
-							waitingQueue[index] = {error};
-						} finally {
-							while (waitingQueue[0]) {
-								const result = waitingQueue.shift();
-
-								if (valuePromises.length > 0) {
-									const {resolve, reject} = valuePromises.shift();
-
-									if (result.error) {
-										reject(result.error);
-									} else {
-										resolve({done: false, value: result.value});
-									}
-								} else {
-									valueQueue.push(result);
-								}
-							}
+						if (done) {
+							isDone = true;
+							waitingQueue[pendingQueue.length] = {done: true};
+							tryToFlushWaitingQueue();
+							return;
 						}
-					})();
 
-					pendingQueue.push(promise);
+						const promise = (async () => {
+							try {
+								const result = await mapper(value);
+
+								const index = pendingQueue.indexOf(promise);
+
+								pendingQueue.splice(index, 1);
+								tryToContinue();
+
+								if (result === pMapSkip) {
+									waitingQueue.splice(index, 1);
+								} else {
+									waitingQueue[index] = {value: result};
+								}
+							} catch (error) {
+								const index = pendingQueue.indexOf(promise);
+
+								pendingQueue.splice(index, 1);
+
+								waitingQueue[index] = {error};
+							} finally {
+								tryToFlushWaitingQueue();
+							}
+						})();
+
+						pendingQueue.push(promise);
+					} catch (error) {
+						waitingQueue[pendingQueue.length] = {error};
+						tryToFlushWaitingQueue();
+					}
 				}
 			}
 
@@ -287,9 +300,13 @@ export function pMapIterable(
 					}
 
 					if (valueQueue.length > 0) {
-						const {value, error} = valueQueue.shift();
+						const {done, value, error} = valueQueue.shift();
 
 						tryToContinue();
+
+						if (done) {
+							return {done: true};
+						}
 
 						if (error) {
 							throw error;
