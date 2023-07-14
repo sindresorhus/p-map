@@ -1,4 +1,4 @@
-interface BaseOptions {
+type BaseOptions = {
 	/**
 	Number of concurrently pending promises returned by `mapper`.
 
@@ -9,11 +9,11 @@ interface BaseOptions {
 	readonly concurrency?: number;
 }
 
-export interface Options extends BaseOptions {
+export type Options = BaseOptions & {
 	/**
 	When `true`, the first mapper rejection will be rejected back to the consumer.
 
-	When `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [aggregated error](https://github.com/sindresorhus/aggregate-error) containing all the errors from the rejected promises.
+	When `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [`AggregateError`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AggregateError) containing all the errors from the rejected promises.
 
 	Caveat: When `true`, any already-started async mappers will continue to run until they resolve or reject. In the case of infinite concurrency with sync iterables, *all* mappers are invoked on startup and will continue after the first rejection. [Issue #51](https://github.com/sindresorhus/p-map/issues/51) can be implemented for abort control.
 
@@ -23,8 +23,6 @@ export interface Options extends BaseOptions {
 
 	/**
 	You can abort the promises using [`AbortController`](https://developer.mozilla.org/en-US/docs/Web/API/AbortController).
-
-	**Requires Node.js 16 or later.*
 
 	@example
 	```
@@ -44,9 +42,9 @@ export interface Options extends BaseOptions {
 	```
 	*/
 	readonly signal?: AbortSignal;
-}
+};
 
-export interface IterableOptions {
+export type IterableOptions = BaseOptions & {
 	/**
 	Maximum number of promises returned by `mapper` that have resolved but not yet collected by the consumer of the async iterable. Calls to `mapper` will be limited so that there is never too much backpressure.
 
