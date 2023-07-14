@@ -226,17 +226,17 @@ export function pMapIterable(
 
 			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
-			function tryToContinue() {
+			async function tryToContinue() {
 				while (pendingQueue.length < concurrency && valueQueue.length + waitingQueue.length + pendingQueue.length < backpressure && !isDone) {
+					const {done, value} = await iterator.next(); // eslint-disable-line no-await-in-loop
+
+					if (done) {
+						isDone = true;
+						return;
+					}
+
 					const promise = (async () => {
 						try {
-							const {done, value} = await iterator.next();
-
-							if (done) {
-								isDone = true;
-								return;
-							}
-
 							const result = await mapper(value);
 
 							const index = pendingQueue.indexOf(promise);
@@ -265,7 +265,7 @@ export function pMapIterable(
 									if (result.error) {
 										reject(result.error);
 									} else {
-										resolve(result.result);
+										resolve({done: false, value: result.value});
 									}
 								} else {
 									valueQueue.push(result);
@@ -282,7 +282,7 @@ export function pMapIterable(
 
 			return {
 				async next() {
-					if (isDone && pendingQueue.length === 0 && waitingQueue === 0 && valueQueue.length === 0) {
+					if (isDone && pendingQueue.length === 0 && waitingQueue.length === 0 && valueQueue.length === 0) {
 						return {done: true};
 					}
 

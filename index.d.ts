@@ -114,7 +114,7 @@ for await (const post of pMapIterable(postIds, getPostMetadata)) {
 };
 ```
 */
-export default function pMapIterable<Element, NewElement>(
+export function pMapIterable<Element, NewElement>(
 	input: AsyncIterable<Element | Promise<Element>> | Iterable<Element | Promise<Element>>,
 	mapper: Mapper<Element, NewElement>,
 	options?: IterableOptions
