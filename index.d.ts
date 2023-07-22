@@ -48,7 +48,7 @@ export type IterableOptions = BaseOptions & {
 	/**
 	Maximum number of promises returned by `mapper` that have resolved but not yet collected by the consumer of the async iterable. Calls to `mapper` will be limited so that there is never too much backpressure.
 
-	@default concurrency
+	Default: `options.concurrency`
 	*/
 	readonly backpressure?: number;
 };
