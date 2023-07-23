@@ -319,6 +319,11 @@ export function pMapIterable(
 						valuePromises.push({resolve, reject});
 					});
 				},
+				async return() {
+					isDone = true;
+
+					return {done: true};
+				},
 			};
 		},
 	};
