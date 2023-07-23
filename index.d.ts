@@ -111,7 +111,7 @@ export default function pMap<Element, NewElement>(
 import {pMapIterable} from 'p-map';
 
 // Multiple posts are fetched concurrently, with limited concurrency and backpressure
-for await (const post of pMapIterable(postIds, getPostMetadata)) {
+for await (const post of pMapIterable(postIds, getPostMetadata, {concurrency: 8})) {
 	console.log(post);
 };
 ```
