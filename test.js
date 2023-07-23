@@ -503,3 +503,32 @@ test('pMapIterable', async t => {
 test('pMapIterable - empty', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable([], mapper)), []);
 });
+
+test('pMapIterable - iterable that throws', async t => {
+	let isFirstNextCall = true;
+
+	const iterable = {
+		[Symbol.asyncIterator]() {
+			return {
+				async next() {
+					if (!isFirstNextCall) {
+						return {done: true};
+					}
+
+					isFirstNextCall = false;
+					throw new Error('foo');
+				},
+			};
+		},
+	};
+
+	const iterator = pMapIterable(iterable, mapper)[Symbol.asyncIterator]();
+
+	await t.throwsAsync(iterator.next(), {message: 'foo'});
+});
+
+test('pMapIterable - mapper that throws', async t => {
+	await t.throwsAsync(collectAsyncIterable(pMapIterable(sharedInput, async () => {
+		throw new Error('foo');
+	})), {message: 'foo'});
+});
