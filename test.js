@@ -33,6 +33,14 @@ const errorInput2 = [
 	}, 10],
 ];
 
+const errorInput3 = [
+	[20, 10],
+	[async () => {
+		throw new Error('bar');
+	}, 100],
+	[30, 100],
+];
+
 const mapper = async ([value, ms]) => {
 	await delay(ms);
 
@@ -68,9 +76,9 @@ class ThrowingIterator {
 					index++;
 					this.index = index;
 				}
-			// eslint is wrong - bind is needed else the next() call cannot update
-			// this.index, which we need to track how many times the iterator was called
-			// eslint-disable-next-line no-extra-bind
+				// eslint is wrong - bind is needed else the next() call cannot update
+				// this.index, which we need to track how many times the iterator was called
+				// eslint-disable-next-line no-extra-bind
 			}).bind(this),
 		};
 	}
@@ -531,4 +539,18 @@ test('pMapIterable - mapper that throws', async t => {
 	await t.throwsAsync(collectAsyncIterable(pMapIterable(sharedInput, async () => {
 		throw new Error('foo');
 	})), {message: 'foo'});
+});
+
+test('pMapIterable - stop on error', async t => {
+	const output = [];
+
+	try {
+		for await (const value of pMapIterable(errorInput3, mapper)) {
+			output.push(value);
+		}
+	} catch (error) {
+		t.is(error.message, 'bar');
+	}
+
+	t.deepEqual(output, [20]);
 });

@@ -255,6 +255,7 @@ export function pMapIterable(
 							isDone = true;
 							waitingQueue[pendingQueue.length] = {done: true};
 							tryToFlushWaitingQueue();
+
 							return;
 						}
 
@@ -275,9 +276,12 @@ export function pMapIterable(
 							} catch (error) {
 								const index = pendingQueue.indexOf(promise);
 
-								pendingQueue.splice(index, 1);
+								pendingQueue.splice(index);
 
 								waitingQueue[index] = {error};
+
+								isDone = true;
+								waitingQueue[index + 1] = {done: true};
 							} finally {
 								tryToFlushWaitingQueue();
 							}
@@ -286,6 +290,10 @@ export function pMapIterable(
 						pendingQueue.push(promise);
 					} catch (error) {
 						waitingQueue[pendingQueue.length] = {error};
+
+						isDone = true;
+						waitingQueue[pendingQueue.length + 1] = {done: true};
+
 						tryToFlushWaitingQueue();
 					}
 				}
