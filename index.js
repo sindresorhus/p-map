@@ -1,33 +1,3 @@
-/**
-An error to be thrown when the request is aborted by AbortController.
-DOMException is thrown instead of this Error when DOMException is available.
-*/
-export class AbortError extends Error {
-	constructor(message) {
-		super();
-		this.name = 'AbortError';
-		this.message = message;
-	}
-}
-
-/**
-TODO: Remove AbortError and just throw DOMException when targeting Node 18.
-*/
-const getDOMException = errorMessage => globalThis.DOMException === undefined
-	? new AbortError(errorMessage)
-	: new DOMException(errorMessage);
-
-/**
-TODO: Remove below function and just 'reject(signal.reason)' when targeting Node 18.
-*/
-const getAbortedReason = signal => {
-	const reason = signal.reason === undefined
-		? getDOMException('This operation was aborted.')
-		: signal.reason;
-
-	return reason instanceof Error ? reason : getDOMException(reason);
-};
-
 export default async function pMap(
 	iterable,
 	mapper,
@@ -68,11 +38,11 @@ export default async function pMap(
 
 		if (signal) {
 			if (signal.aborted) {
-				reject(getAbortedReason(signal));
+				reject(signal.reason);
 			}
 
 			signal.addEventListener('abort', () => {
-				reject(getAbortedReason(signal));
+				reject(signal.reason);
 			});
 		}
 
