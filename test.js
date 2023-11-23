@@ -76,9 +76,9 @@ class ThrowingIterator {
 					index++;
 					this.index = index;
 				}
-				// eslint is wrong - bind is needed else the next() call cannot update
-				// this.index, which we need to track how many times the iterator was called
-				// eslint-disable-next-line no-extra-bind
+			// eslint is wrong - bind is needed else the next() call cannot update
+			// this.index, which we need to track how many times the iterator was called
+			// eslint-disable-next-line no-extra-bind
 			}).bind(this),
 		};
 	}
