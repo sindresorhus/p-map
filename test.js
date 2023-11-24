@@ -1,14 +1,22 @@
 import test from 'ava';
 import delay from 'delay';
-import inRange from 'in-range';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
+import assertInRange from './assert-in-range.js';
 import pMap, {pMapIterable, pMapSkip} from './index.js';
 
 const sharedInput = [
 	[async () => 10, 300],
 	[20, 200],
 	[30, 100],
+];
+
+const longerSharedInput = [
+	[10, 300],
+	[20, 200],
+	[30, 100],
+	[40, 50],
+	[50, 25],
 ];
 
 const errorInput1 = [
@@ -76,9 +84,9 @@ class ThrowingIterator {
 					index++;
 					this.index = index;
 				}
-			// eslint is wrong - bind is needed else the next() call cannot update
-			// this.index, which we need to track how many times the iterator was called
-			// eslint-disable-next-line no-extra-bind
+				// eslint is wrong - bind is needed else the next() call cannot update
+				// this.index, which we need to track how many times the iterator was called
+				// eslint-disable-next-line no-extra-bind
 			}).bind(this),
 		};
 	}
@@ -89,13 +97,13 @@ test('main', async t => {
 	t.deepEqual(await pMap(sharedInput, mapper), [10, 20, 30]);
 
 	// We give it some leeway on both sides of the expected 300ms as the exact value depends on the machine and workload.
-	t.true(inRange(end(), {start: 290, end: 430}));
+	assertInRange(t, end(), {start: 290, end: 430});
 });
 
 test('concurrency: 1', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(sharedInput, mapper, {concurrency: 1}), [10, 20, 30]);
-	t.true(inRange(end(), {start: 590, end: 760}));
+	assertInRange(t, end(), {start: 590, end: 760});
 });
 
 test('concurrency: 4', async t => {
@@ -225,13 +233,13 @@ test('asyncIterator - main', async t => {
 	t.deepEqual(await pMap(new AsyncTestData(sharedInput), mapper), [10, 20, 30]);
 
 	// We give it some leeway on both sides of the expected 300ms as the exact value depends on the machine and workload.
-	t.true(inRange(end(), {start: 290, end: 430}));
+	assertInRange(t, end(), {start: 290, end: 430});
 });
 
 test('asyncIterator - concurrency: 1', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(new AsyncTestData(sharedInput), mapper, {concurrency: 1}), [10, 20, 30]);
-	t.true(inRange(end(), {start: 590, end: 760}));
+	assertInRange(t, end(), {start: 590, end: 760});
 });
 
 test('asyncIterator - concurrency: 4', async t => {
@@ -553,4 +561,29 @@ test('pMapIterable - stop on error', async t => {
 	}
 
 	t.deepEqual(output, [20]);
+});
+
+test('pMapIterable - concurrency', async t => {
+	const end = timeSpan();
+	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapper, {concurrency: 1})), [10, 20, 30]);
+
+	// It could've only taken this much time if each were run in series
+	assertInRange(t, end(), {start: 590, end: 760});
+});
+
+test('pMapIterable - backpressure', async t => {
+	let currentValue;
+
+	// Concurrency option is forced by an early check
+	const {value} = await pMapIterable(longerSharedInput, async value => {
+		currentValue = await mapper(value);
+		return currentValue;
+	}, {backpressure: 2, concurrency: 2})[Symbol.asyncIterator]().next();
+
+	t.is(value, 10);
+
+	// If backpressure is not respected, than all items will be evaluated in this time
+	await delay(600);
+
+	t.is(currentValue, 30);
 });

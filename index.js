@@ -217,122 +217,61 @@ export function pMapIterable(
 	}
 
 	return {
-		[Symbol.asyncIterator]() {
-			let isDone = false;
-			const pendingQueue = [];
-			const waitingQueue = [];
-			const valueQueue = [];
-			const valuePromises = [];
-
+		async * [Symbol.asyncIterator]() {
 			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
-			function tryToFlushWaitingQueue() {
-				while (waitingQueue[0]) {
-					const result = waitingQueue.shift();
+			const promises = [];
+			let runningMappersCount = 0;
+			let isDone = false;
 
-					if (valuePromises.length > 0) {
-						const {resolve, reject} = valuePromises.shift();
+			async function spawn() {
+				const {done, value} = await iterator.next();
 
-						if (result.done) {
-							resolve({done: true});
-						} else if (result.error) {
-							reject(result.error);
-						} else {
-							resolve({done: false, value: result.value});
-						}
-					} else {
-						valueQueue.push(result);
-					}
-				}
-			}
-
-			async function tryToContinue() {
-				while (pendingQueue.length < concurrency && valueQueue.length + waitingQueue.length + pendingQueue.length < backpressure && !isDone) {
-					try {
-						const {done, value} = await iterator.next(); // eslint-disable-line no-await-in-loop
-
-						if (done) {
-							isDone = true;
-							waitingQueue[pendingQueue.length] = {done: true};
-							tryToFlushWaitingQueue();
-
-							return;
-						}
-
-						const promise = (async () => {
-							try {
-								const result = await mapper(value);
-
-								const index = pendingQueue.indexOf(promise);
-
-								pendingQueue.splice(index, 1);
-								tryToContinue();
-
-								if (result === pMapSkip) {
-									waitingQueue.splice(index, 1);
-								} else {
-									waitingQueue[index] = {value: result};
-								}
-							} catch (error) {
-								const index = pendingQueue.indexOf(promise);
-
-								pendingQueue.splice(index);
-
-								waitingQueue[index] = {error};
-
-								isDone = true;
-								waitingQueue[index + 1] = {done: true};
-							} finally {
-								tryToFlushWaitingQueue();
-							}
-						})();
-
-						pendingQueue.push(promise);
-					} catch (error) {
-						waitingQueue[pendingQueue.length] = {error};
-
-						isDone = true;
-						waitingQueue[pendingQueue.length + 1] = {done: true};
-
-						tryToFlushWaitingQueue();
-					}
-				}
-			}
-
-			tryToContinue();
-
-			return {
-				async next() {
-					if (isDone && pendingQueue.length === 0 && waitingQueue.length === 0 && valueQueue.length === 0) {
-						return {done: true};
-					}
-
-					if (valueQueue.length > 0) {
-						const {done, value, error} = valueQueue.shift();
-
-						tryToContinue();
-
-						if (done) {
-							return {done: true};
-						}
-
-						if (error) {
-							throw error;
-						}
-
-						return {done: false, value};
-					}
-
-					return new Promise((resolve, reject) => {
-						valuePromises.push({resolve, reject});
-					});
-				},
-				async return() {
-					isDone = true;
-
+				if (done) {
 					return {done: true};
-				},
-			};
+				}
+
+				runningMappersCount++;
+
+				// Spawn if still below concurrency and backpressure limit
+				trySpawn();
+
+				try {
+					const returnValue = await mapper(value);
+
+					runningMappersCount--;
+
+					// Spawn if still below backpressure limit and just dropped below concurrency limit
+					trySpawn();
+
+					return {done: false, value: returnValue};
+				} catch (error) {
+					isDone = true;
+					return {error};
+				}
+			}
+
+			function trySpawn() {
+				if (!isDone && runningMappersCount < concurrency && promises.length < backpressure) {
+					promises.push(spawn());
+				}
+			}
+
+			trySpawn();
+
+			while (promises.length > 0) {
+				const {error, done, value} = await promises.shift(); // eslint-disable-line no-await-in-loop
+
+				if (error) {
+					throw error;
+				}
+
+				if (done) {
+					return;
+				}
+
+				yield value;
+			}
 		},
 	};
 }

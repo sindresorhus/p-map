@@ -1,6 +1,6 @@
 import test from 'ava';
-import inRange from 'in-range';
 import timeSpan from 'time-span';
+import assertInRange from './assert-in-range.js';
 import pMap, {pMapSkip} from './index.js';
 
 function generateSkipPerformanceData(length) {
@@ -32,6 +32,6 @@ test('multiple pMapSkips - algorithmic complexity', async t => {
 		// shorter test. This is not perfect... there is some fluctuation.
 		// The idea here is to catch a regression that makes `pMapSkip` handling O(n^2)
 		// on the number of `pMapSkip` items in the input.
-		t.true(inRange(longerDuration, {start: 1.2 * smallerDuration, end: 15 * smallerDuration}));
+		assertInRange(t, longerDuration, {start: 1.2 * smallerDuration, end: 15 * smallerDuration});
 	}
 });
