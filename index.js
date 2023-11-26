@@ -194,43 +194,53 @@ export function pMapIterable(
 			let runningMappersCount = 0;
 			let isDone = false;
 
-			async function spawn() {
-				const {done, value} = await iterator.next();
-
-				if (done) {
-					return {done: true};
-				}
-
-				runningMappersCount++;
-
-				// Spawn if still below concurrency and backpressure limit
-				trySpawn();
-
-				try {
-					const returnValue = await mapper(value);
-
-					runningMappersCount--;
-
-					// Spawn if still below backpressure limit and just dropped below concurrency limit
-					trySpawn();
-
-					return {done: false, value: returnValue};
-				} catch (error) {
-					isDone = true;
-					return {error};
-				}
-			}
-
 			function trySpawn() {
 				if (!isDone && runningMappersCount < concurrency && promises.length < backpressure) {
-					promises.push(spawn());
+					const promise = (async () => {
+						const {done, value} = await iterator.next();
+
+						if (done) {
+							return {done: true};
+						}
+
+						runningMappersCount++;
+
+						// Spawn if still below concurrency and backpressure limit
+						trySpawn();
+
+						try {
+							const returnValue = await mapper(value);
+
+							runningMappersCount--;
+
+							if (returnValue === pMapSkip) {
+								const index = promises.indexOf(promise);
+
+								if (index > 0) {
+									promises.splice(index, 1);
+								}
+							}
+
+							// Spawn if still below backpressure limit and just dropped below concurrency limit
+							trySpawn();
+
+							return {done: false, value: returnValue};
+						} catch (error) {
+							isDone = true;
+							return {error};
+						}
+					})();
+
+					promises.push(promise);
 				}
 			}
 
 			trySpawn();
 
 			while (promises.length > 0) {
-				const {error, done, value} = await promises.shift(); // eslint-disable-line no-await-in-loop
+				const {error, done, value} = await promises[0]; // eslint-disable-line no-await-in-loop
+
+				promises.shift();
 
 				if (error) {
 					throw error;
@@ -238,6 +248,13 @@ export function pMapIterable(
 
 				if (done) {
 					return;
+				}
+
+				// Spawn if just dropped below backpressure limit and below the concurrency limit
+				trySpawn();
+
+				if (value === pMapSkip) {
+					continue;
 				}
 
 				yield value;

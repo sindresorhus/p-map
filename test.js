@@ -565,33 +565,57 @@ test('pMapIterable - stop on error', async t => {
 
 test('pMapIterable - concurrency: 1', async t => {
 	const end = timeSpan();
-	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapper, {concurrency: 1})), [10, 20, 30]);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapper, {concurrency: 1, backpressure: Number.POSITIVE_INFINITY})), [10, 20, 30]);
 
 	// It could've only taken this much time if each were run in series
 	assertInRange(t, end(), {start: 590, end: 760});
 });
 
 test('pMapIterable - concurrency: 2', async t => {
+	const times = new Map();
 	const end = timeSpan();
 
-	t.deepEqual(await collectAsyncIterable(pMapIterable(longerSharedInput, mapper, {concurrency: 2})), [10, 20, 30, 40, 50]);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(longerSharedInput, value => {
+		times.set(value[0], end());
+		return mapper(value);
+	}, {concurrency: 2, backpressure: Number.POSITIVE_INFINITY})), [10, 20, 30, 40, 50]);
 
-	assertInRange(t, end(), {start: 325, end: 375});
+	assertInRange(t, times.get(10), {start: 0, end: 50});
+	assertInRange(t, times.get(20), {start: 0, end: 50});
+	assertInRange(t, times.get(30), {start: 200, end: 250});
+	assertInRange(t, times.get(40), {start: 300, end: 350});
+	assertInRange(t, times.get(50), {start: 300, end: 350});
 });
 
 test('pMapIterable - backpressure', async t => {
 	let currentValue;
 
 	// Concurrency option is forced by an early check
-	const {value} = await pMapIterable(longerSharedInput, async value => {
+	const asyncIterator = pMapIterable(longerSharedInput, async value => {
 		currentValue = await mapper(value);
 		return currentValue;
-	}, {backpressure: 2, concurrency: 2})[Symbol.asyncIterator]().next();
+	}, {backpressure: 2, concurrency: 2})[Symbol.asyncIterator]();
 
-	t.is(value, 10);
+	const {value: value1} = await asyncIterator.next();
+	t.is(value1, 10);
 
 	// If backpressure is not respected, than all items will be evaluated in this time
 	await delay(600);
 
 	t.is(currentValue, 30);
+
+	const {value: value2} = await asyncIterator.next();
+	t.is(value2, 20);
+
+	await delay(100);
+
+	t.is(currentValue, 40);
+});
+
+test('pMapIterable - pMapSkip', async t => {
+	t.deepEqual(await collectAsyncIterable(pMapIterable([
+		1,
+		pMapSkip,
+		2,
+	], async value => value)), [1, 2]);
 });
