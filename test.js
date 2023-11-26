@@ -563,12 +563,20 @@ test('pMapIterable - stop on error', async t => {
 	t.deepEqual(output, [20]);
 });
 
-test('pMapIterable - concurrency', async t => {
+test('pMapIterable - concurrency: 1', async t => {
 	const end = timeSpan();
 	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapper, {concurrency: 1})), [10, 20, 30]);
 
 	// It could've only taken this much time if each were run in series
 	assertInRange(t, end(), {start: 590, end: 760});
+});
+
+test('pMapIterable - concurrency: 2', async t => {
+	const end = timeSpan();
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(longerSharedInput, mapper, {concurrency: 2})), [10, 20, 30, 40, 50]);
+
+	assertInRange(t, end(), {start: 325, end: 375});
 });
 
 test('pMapIterable - backpressure', async t => {
