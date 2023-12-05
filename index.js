@@ -195,44 +195,46 @@ export function pMapIterable(
 			let isDone = false;
 
 			function trySpawn() {
-				if (!isDone && runningMappersCount < concurrency && promises.length < backpressure) {
-					const promise = (async () => {
-						const {done, value} = await iterator.next();
+				if (isDone || !(runningMappersCount < concurrency && promises.length < backpressure)) {
+					return;
+				}
 
-						if (done) {
-							return {done: true};
+				const promise = (async () => {
+					const {done, value} = await iterator.next();
+
+					if (done) {
+						return {done: true};
+					}
+
+					runningMappersCount++;
+
+					// Spawn if still below concurrency and backpressure limit
+					trySpawn();
+
+					try {
+						const returnValue = await mapper(value);
+
+						runningMappersCount--;
+
+						if (returnValue === pMapSkip) {
+							const index = promises.indexOf(promise);
+
+							if (index > 0) {
+								promises.splice(index, 1);
+							}
 						}
 
-						runningMappersCount++;
-
-						// Spawn if still below concurrency and backpressure limit
+						// Spawn if still below backpressure limit and just dropped below concurrency limit
 						trySpawn();
 
-						try {
-							const returnValue = await mapper(value);
+						return {done: false, value: returnValue};
+					} catch (error) {
+						isDone = true;
+						return {error};
+					}
+				})();
 
-							runningMappersCount--;
-
-							if (returnValue === pMapSkip) {
-								const index = promises.indexOf(promise);
-
-								if (index > 0) {
-									promises.splice(index, 1);
-								}
-							}
-
-							// Spawn if still below backpressure limit and just dropped below concurrency limit
-							trySpawn();
-
-							return {done: false, value: returnValue};
-						} catch (error) {
-							isDone = true;
-							return {error};
-						}
-					})();
-
-					promises.push(promise);
-				}
+				promises.push(promise);
 			}
 
 			trySpawn();
