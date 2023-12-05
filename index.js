@@ -16,7 +16,7 @@ export default async function pMap(
 			throw new TypeError('Mapper function is required');
 		}
 
-		if (!((Number.isSafeInteger(concurrency) || concurrency === Number.POSITIVE_INFINITY) && concurrency >= 1)) {
+		if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
 			throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
 		}
 
@@ -160,6 +160,109 @@ export default async function pMap(
 			}
 		})();
 	});
+}
+
+export function pMapIterable(
+	iterable,
+	mapper,
+	{
+		concurrency = Number.POSITIVE_INFINITY,
+		backpressure = concurrency,
+	} = {},
+) {
+	if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
+		throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
+	}
+
+	if (typeof mapper !== 'function') {
+		throw new TypeError('Mapper function is required');
+	}
+
+	if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
+		throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
+	}
+
+	if (!((Number.isSafeInteger(backpressure) && backpressure >= concurrency) || backpressure === Number.POSITIVE_INFINITY)) {
+		throw new TypeError(`Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${typeof backpressure})`);
+	}
+
+	return {
+		async * [Symbol.asyncIterator]() {
+			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
+
+			const promises = [];
+			let runningMappersCount = 0;
+			let isDone = false;
+
+			function trySpawn() {
+				if (isDone || !(runningMappersCount < concurrency && promises.length < backpressure)) {
+					return;
+				}
+
+				const promise = (async () => {
+					const {done, value} = await iterator.next();
+
+					if (done) {
+						return {done: true};
+					}
+
+					runningMappersCount++;
+
+					// Spawn if still below concurrency and backpressure limit
+					trySpawn();
+
+					try {
+						const returnValue = await mapper(value);
+
+						runningMappersCount--;
+
+						if (returnValue === pMapSkip) {
+							const index = promises.indexOf(promise);
+
+							if (index > 0) {
+								promises.splice(index, 1);
+							}
+						}
+
+						// Spawn if still below backpressure limit and just dropped below concurrency limit
+						trySpawn();
+
+						return {done: false, value: returnValue};
+					} catch (error) {
+						isDone = true;
+						return {error};
+					}
+				})();
+
+				promises.push(promise);
+			}
+
+			trySpawn();
+
+			while (promises.length > 0) {
+				const {error, done, value} = await promises[0]; // eslint-disable-line no-await-in-loop
+
+				promises.shift();
+
+				if (error) {
+					throw error;
+				}
+
+				if (done) {
+					return;
+				}
+
+				// Spawn if just dropped below backpressure limit and below the concurrency limit
+				trySpawn();
+
+				if (value === pMapSkip) {
+					continue;
+				}
+
+				yield value;
+			}
+		},
+	};
 }
 
 export const pMapSkip = Symbol('skip');

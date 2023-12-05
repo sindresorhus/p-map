@@ -1,5 +1,5 @@
 import {expectType, expectAssignable} from 'tsd';
-import pMap, {type Options, type Mapper, pMapSkip} from './index.js';
+import pMap, {pMapIterable, type Options, type Mapper, pMapSkip} from './index.js';
 
 const sites = [
 	'https://sindresorhus.com',
@@ -48,3 +48,5 @@ expectType<Promise<number[]>>(pMap(numbers, (number: number) => {
 
 	return pMapSkip;
 }));
+
+expectType<AsyncIterable<string>>(pMapIterable(sites, asyncMapper));
