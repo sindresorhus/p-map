@@ -82,7 +82,7 @@ Number of concurrently pending promises returned by `mapper`.
 
 ##### backpressure
 
-**Only for `pMapInterable`**
+**Only for `pMapIterable`**
 
 Type: `number` *(Integer)*\
 Default: `options.concurrency`\
