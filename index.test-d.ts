@@ -7,6 +7,33 @@ const sites = [
 	'https://github.com',
 ];
 
+const sitesWithPromises = [
+	'https://sindresorhus.com',
+	Promise.resolve('https://avajs.dev'),
+	Promise.resolve('https://github.com'),
+];
+
+const sitesAsyncIterable = {
+	async * [Symbol.asyncIterator]() {
+		yield 'https://sindresorhus.com';
+		yield 'https://avajs.dev';
+		yield 'https://github.com';
+	},
+};
+
+const sitesAsyncIterableWithPromises: AsyncIterable<Promise<string>> = {
+	[Symbol.asyncIterator]() {
+		return {
+			async next() {
+				return {
+					done: false,
+					value: Promise.resolve('https://github.com'),
+				};
+			},
+		};
+	},
+};
+
 const numbers = [
 	0,
 	1,
@@ -50,3 +77,6 @@ expectType<Promise<number[]>>(pMap(numbers, (number: number) => {
 }));
 
 expectType<AsyncIterable<string>>(pMapIterable(sites, asyncMapper));
+expectType<AsyncIterable<string>>(pMapIterable(sitesWithPromises, asyncMapper));
+expectType<AsyncIterable<string>>(pMapIterable(sitesAsyncIterable, asyncMapper));
+expectType<AsyncIterable<string>>(pMapIterable(sitesAsyncIterableWithPromises, asyncMapper));
