@@ -8,7 +8,7 @@ import pMap, {pMapIterable, pMapSkip} from './index.js';
 const sharedInput = [
 	[async () => 10, 300],
 	[20, 200],
-	[30, 100],
+	Promise.resolve([30, 100]),
 ];
 
 const longerSharedInput = [

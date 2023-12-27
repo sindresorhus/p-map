@@ -212,7 +212,7 @@ export function pMapIterable(
 					trySpawn();
 
 					try {
-						const returnValue = await mapper(value);
+						const returnValue = await mapper(await value);
 
 						runningMappersCount--;
 
