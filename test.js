@@ -59,6 +59,16 @@ const mapper = async ([value, ms]) => {
 	return value;
 };
 
+const mapperWithIndex = async ([value, ms], index) => {
+	await delay(ms);
+
+	if (typeof value === 'function') {
+		value = await value();
+	}
+
+	return {value, index};
+};
+
 class ThrowingIterator {
 	constructor(max, throwOnIndex) {
 		this._max = max;
@@ -514,6 +524,21 @@ async function collectAsyncIterable(asyncIterable) {
 
 test('pMapIterable', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapper)), [10, 20, 30]);
+});
+
+test('pMapIterable - index in mapper', async t => {
+	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapperWithIndex)), [
+		{value: 10, index: 0},
+		{value: 20, index: 1},
+		{value: 30, index: 2},
+	]);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(longerSharedInput, mapperWithIndex)), [
+		{value: 10, index: 0},
+		{value: 20, index: 1},
+		{value: 30, index: 2},
+		{value: 40, index: 3},
+		{value: 50, index: 4},
+	]);
 });
 
 test('pMapIterable - empty', async t => {
