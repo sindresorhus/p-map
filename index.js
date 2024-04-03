@@ -193,6 +193,7 @@ export function pMapIterable(
 			const promises = [];
 			let runningMappersCount = 0;
 			let isDone = false;
+			let index = 0;
 
 			function trySpawn() {
 				if (isDone || !(runningMappersCount < concurrency && promises.length < backpressure)) {
@@ -212,7 +213,7 @@ export function pMapIterable(
 					trySpawn();
 
 					try {
-						const returnValue = await mapper(await value);
+						const returnValue = await mapper(await value, index++);
 
 						runningMappersCount--;
 
