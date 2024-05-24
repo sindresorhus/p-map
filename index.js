@@ -168,6 +168,7 @@ export function pMapIterable(
 	{
 		concurrency = Number.POSITIVE_INFINITY,
 		backpressure = concurrency,
+		preserveOrder = true,
 	} = {},
 ) {
 	if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
@@ -186,84 +187,177 @@ export function pMapIterable(
 		throw new TypeError(`Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${typeof backpressure})`);
 	}
 
+	if (typeof preserveOrder !== 'boolean') {
+		throw new TypeError(`Expected \`preserveOrder\` to be a boolean, got \`${preserveOrder}\` (${typeof preserveOrder})`);
+	}
+
 	return {
 		async * [Symbol.asyncIterator]() {
 			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
 			const promises = [];
+			const promisesIndexFromInputIndex = {};
+			const inputIndexFromPromisesIndex = [];
 			let runningMappersCount = 0;
 			let isDone = false;
-			let index = 0;
+			let inputIndex = 0;
+			let outputIndex = 0; // Only used when `preserveOrder: false`
+
+			const nextPromise = preserveOrder
+				// Treat `promises` as a queue
+				? () => {
+					// May be undefined bc of `pMapSkip`s
+					while (promisesIndexFromInputIndex[outputIndex] === undefined) {
+						outputIndex += 1;
+					}
+
+					return promises[promisesIndexFromInputIndex[outputIndex++]];
+				}
+				// Treat `promises` as a pool (order doesn't matter)
+				: () => Promise.race(promises);
+
+			function popPromise(inputIndex) {
+				// Swap the fulfilled promise with the last element to avoid an O(n) shift to the `promises` array
+				const tail = promises.pop();
+				const tailInputIndex = inputIndexFromPromisesIndex.pop();
+				const promisesIndex = promisesIndexFromInputIndex[inputIndex];
+				delete promisesIndexFromInputIndex[inputIndex];
+
+				if (promisesIndex !== promises.length) {
+					promises[promisesIndex] = tail;
+					inputIndexFromPromisesIndex[promisesIndex] = tailInputIndex;
+					promisesIndexFromInputIndex[tailInputIndex] = promisesIndex;
+				}
+			}
+
+			async function mapNext(promisesIndex) {
+				let next = iterator.next();
+
+				const myInputIndex = inputIndex++; // Save this promise's index before `trySpawn`ing others
+				runningMappersCount++;
+				promisesIndexFromInputIndex[myInputIndex] = promisesIndex;
+				inputIndexFromPromisesIndex[promisesIndex] = myInputIndex;
+
+				if (isPromiseLike(next)) {
+					// Optimization: if our concurrency and/or backpressure is bounded (so that we won't infinitely recurse),
+					// and we need to `await` the next `iterator` element, we first eagerly spawn more `mapNext` promises,
+					// so that these promises can begin `await`ing their respective `iterator` elements (if needed) and `mapper` results in parallel.
+					// This may entail memory usage closer to `options.backpressure` than necessary, but this space was already allocated to `pMapIterable` via
+					// `options.concurrency` and `options.backpressure`.
+					// This may also cause iteration well past the end of the `iterator`: we don't inspect the `iterator`'s response before `trySpawn`ing
+					// (because we are `trySpawn`ing before `await`ing the response), which will request the next `iterator` element, so we may end up spawning many promises which resolve to `done`.
+					// However, the time needed to `await` and ignore these `done` promises is presumed to be small relative to the time needed to perform common
+					// `async` operations like disk reads, network requests, etc.
+					// Overall, this can reduce the total time taken to process all elements.
+					if (backpressure !== Number.POSITIVE_INFINITY) {
+						// Spawn if still below concurrency and backpressure limit
+						trySpawn();
+					}
+
+					try {
+						next = await next;
+					} catch (error) {
+						isDone = true;
+						return {result: {error}, inputIndex: myInputIndex};
+					}
+				}
+
+				let {done, value} = next;
+
+				if (done) {
+					isDone = true;
+					return {result: {done: true}, inputIndex: myInputIndex};
+				}
+
+				// Spawn if still below concurrency and backpressure limit
+				trySpawn();
+
+				let returnValue;
+				try {
+					if (isPromiseLike(value)) {
+						value = await value;
+					}
+
+					returnValue = mapper(value, myInputIndex);
+					if (isPromiseLike(returnValue)) {
+						returnValue = await returnValue;
+					}
+				} catch (error) {
+					isDone = true;
+					return {result: {error}, inputIndex: myInputIndex};
+				}
+
+				runningMappersCount--;
+
+				if (returnValue === pMapSkip) {
+					// If `preserveOrder: true`, resolve to the next inputIndex's promise, in case we are already being `await`ed
+					// NOTE: no chance that `myInputIndex + 1`-spawning code is waiting to be executed in another part of the event loop,
+					// but currently `promisesIndexFromInputIndex[myInputIndex + 1] === undefined` (so that we incorrectly `mapNext` and
+					// this potentially-currently-awaited promise resolves to the result of mapping a later element than a different member of
+					// `promises`, i.e. `promises` resolve out of order), because all `trySpawn`/`mapNext` calls execute the bookkeeping synchronously,
+					// before any `await`s.
+					if (preserveOrder && promisesIndexFromInputIndex[myInputIndex + 1] !== undefined) {
+						popPromise(myInputIndex);
+						return promises[promisesIndexFromInputIndex[myInputIndex + 1]];
+					}
+
+					// Otherwise, start mapping the next input element
+					delete promisesIndexFromInputIndex[myInputIndex];
+					// Not necessary to `delete inputIndexFromPromisesIndex[promisesIndex]` since `inputIndexFromPromisesIndex[promisesIndex]` is only used
+					// when this promise resolves, but by that point this recursive `mapNext(promisesIndex)` call will have necessarily overwritten it.
+					return mapNext(promisesIndex);
+				}
+
+				// Spawn if still below backpressure limit and just dropped below concurrency limit
+				trySpawn();
+
+				return {result: {value: returnValue}, inputIndex: myInputIndex};
+			}
 
 			function trySpawn() {
 				if (isDone || !(runningMappersCount < concurrency && promises.length < backpressure)) {
 					return;
 				}
 
-				const promise = (async () => {
-					const {done, value} = await iterator.next();
-
-					if (done) {
-						return {done: true};
-					}
-
-					runningMappersCount++;
-
-					// Spawn if still below concurrency and backpressure limit
-					trySpawn();
-
-					try {
-						const returnValue = await mapper(await value, index++);
-
-						runningMappersCount--;
-
-						if (returnValue === pMapSkip) {
-							const index = promises.indexOf(promise);
-
-							if (index > 0) {
-								promises.splice(index, 1);
-							}
-						}
-
-						// Spawn if still below backpressure limit and just dropped below concurrency limit
-						trySpawn();
-
-						return {done: false, value: returnValue};
-					} catch (error) {
-						isDone = true;
-						return {error};
-					}
-				})();
-
-				promises.push(promise);
+				// Reserve index in `promises` array: we don't actually have the promise to save yet,
+				// but we don't want recursive `trySpawn` calls to use this same index.
+				// This is safe (i.e., the empty slot won't be `await`ed) because we replace the value immediately,
+				// without yielding to the event loop, so no consumers (namely `getAndRemoveFromPoolNextPromise`)
+				// can observe the intermediate state.
+				const promisesIndex = promises.length++;
+				promises[promisesIndex] = mapNext(promisesIndex);
 			}
 
 			trySpawn();
 
 			while (promises.length > 0) {
-				const {error, done, value} = await promises[0]; // eslint-disable-line no-await-in-loop
-
-				promises.shift();
+				const {result: {error, done, value}, inputIndex} = await nextPromise();// eslint-disable-line no-await-in-loop
+				popPromise(inputIndex);
 
 				if (error) {
 					throw error;
 				}
 
 				if (done) {
+					// When `preserveOrder: false`, ignore to consume any remaining pending promises in the pool
+					if (!preserveOrder) {
+						continue;
+					}
+
 					return;
 				}
 
 				// Spawn if just dropped below backpressure limit and below the concurrency limit
 				trySpawn();
 
-				if (value === pMapSkip) {
-					continue;
-				}
-
 				yield value;
 			}
 		},
 	};
+}
+
+function isPromiseLike(p) {
+	return typeof p === 'object' && p !== null && 'then' in p && typeof p.then === 'function';
 }
 
 export const pMapSkip = Symbol('skip');
