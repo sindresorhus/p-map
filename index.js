@@ -231,39 +231,38 @@ export function pMapIterable(
 			}
 
 			async function mapNext(promisesIndex) {
-				let next = iterator.next();
-
 				const myInputIndex = inputIndex++; // Save this promise's index before `trySpawn`ing others
 				runningMappersCount++;
 				promisesIndexFromInputIndex[myInputIndex] = promisesIndex;
 				inputIndexFromPromisesIndex[promisesIndex] = myInputIndex;
 
-				if (isPromiseLike(next)) {
-					// Optimization: if our concurrency and/or backpressure is bounded (so that we won't infinitely recurse),
-					// and we need to `await` the next `iterator` element, we first eagerly spawn more `mapNext` promises,
-					// so that these promises can begin `await`ing their respective `iterator` elements (if needed) and `mapper` results in parallel.
-					// This may entail memory usage closer to `options.backpressure` than necessary, but this space was already allocated to `pMapIterable` via
-					// `options.concurrency` and `options.backpressure`.
-					// This may also cause iteration well past the end of the `iterator`: we don't inspect the `iterator`'s response before `trySpawn`ing
-					// (because we are `trySpawn`ing before `await`ing the response), which will request the next `iterator` element, so we may end up spawning many promises which resolve to `done`.
-					// However, the time needed to `await` and ignore these `done` promises is presumed to be small relative to the time needed to perform common
-					// `async` operations like disk reads, network requests, etc.
-					// Overall, this can reduce the total time taken to process all elements.
-					if (backpressure !== Number.POSITIVE_INFINITY) {
-						// Spawn if still below concurrency and backpressure limit
-						trySpawn();
-					}
+				let next;
+				try {
+					next = iterator.next();
+					if (isPromiseLike(next)) {
+						// Optimization: if our concurrency and/or backpressure is bounded (so that we won't infinitely recurse),
+						// and we need to `await` the next `iterator` element, we first eagerly spawn more `mapNext` promises,
+						// so that these promises can begin `await`ing their respective `iterator` elements (if needed) and `mapper` results in parallel.
+						// This may entail memory usage closer to `options.backpressure` than necessary, but this space was already allocated to `pMapIterable` via
+						// `options.concurrency` and `options.backpressure`.
+						// This may also cause iteration well past the end of the `iterator`: we don't inspect the `iterator`'s response before `trySpawn`ing
+						// (because we are `trySpawn`ing before `await`ing the response), which will request the next `iterator` element, so we may end up spawning many promises which resolve to `done`.
+						// However, the time needed to `await` and ignore these `done` promises is presumed to be small relative to the time needed to perform common
+						// `async` operations like disk reads, network requests, etc.
+						// Overall, this can reduce the total time taken to process all elements.
+						if (backpressure !== Number.POSITIVE_INFINITY) {
+							// Spawn if still below concurrency and backpressure limit
+							trySpawn();
+						}
 
-					try {
 						next = await next;
-					} catch (error) {
-						isDone = true;
-						return {result: {error}, inputIndex: myInputIndex};
 					}
+				} catch (error) {
+					isDone = true;
+					return {result: {error}, inputIndex: myInputIndex};
 				}
 
 				let {done, value} = next;
-
 				if (done) {
 					isDone = true;
 					return {result: {done: true}, inputIndex: myInputIndex};

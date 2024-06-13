@@ -545,7 +545,7 @@ test('pMapIterable - empty', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable([], mapper)), []);
 });
 
-test('pMapIterable - iterable that throws', async t => {
+test('pMapIterable - async iterable that throws', async t => {
 	let isFirstNextCall = true;
 
 	const iterable = {
@@ -568,8 +568,23 @@ test('pMapIterable - iterable that throws', async t => {
 	await t.throwsAsync(iterator.next(), {message: 'foo'});
 });
 
-test('pMapIterable - mapper that throws', async t => {
+test('pMapIterable - sync iterable that throws', async t => {
+	function * throwingGenerator() { // eslint-disable-line require-yield
+		throw new Error('foo');
+	}
+
+	const iterator = pMapIterable(throwingGenerator(), mapper)[Symbol.asyncIterator]();
+	await t.throwsAsync(() => iterator.next(), {message: 'foo'});
+});
+
+test('pMapIterable - async mapper that throws', async t => {
 	await t.throwsAsync(collectAsyncIterable(pMapIterable(sharedInput, async () => {
+		throw new Error('foo');
+	})), {message: 'foo'});
+});
+
+test('pMapIterable - sync mapper that throws', async t => {
+	await t.throwsAsync(collectAsyncIterable(pMapIterable(sharedInput, () => {
 		throw new Error('foo');
 	})), {message: 'foo'});
 });
