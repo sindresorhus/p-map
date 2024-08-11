@@ -191,23 +191,23 @@ export function pMapIterable(
 			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
 			const promises = [];
-			let runningMappersCount = 0;
+			let pendingPromisesCount = 0;
 			let isDone = false;
 			let index = 0;
 
 			function trySpawn() {
-				if (isDone || !(runningMappersCount < concurrency && promises.length < backpressure)) {
+				if (isDone || !(pendingPromisesCount < concurrency && promises.length < backpressure)) {
 					return;
 				}
 
 				const promise = (async () => {
+					pendingPromisesCount++;
 					const {done, value} = await iterator.next();
 
 					if (done) {
+						pendingPromisesCount--;
 						return {done: true};
 					}
-
-					runningMappersCount++;
 
 					// Spawn if still below concurrency and backpressure limit
 					trySpawn();
@@ -215,7 +215,7 @@ export function pMapIterable(
 					try {
 						const returnValue = await mapper(await value, index++);
 
-						runningMappersCount--;
+						pendingPromisesCount--;
 
 						if (returnValue === pMapSkip) {
 							const index = promises.indexOf(promise);
