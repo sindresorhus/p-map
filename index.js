@@ -227,7 +227,7 @@ export function pMapIterable(
 			const nextPromise = preserveOrder
 				// Treat `promises` as a queue
 				? () => {
-					// May be `undefined` bc of `pMapSkip`s
+					// May be `undefined` bc of `pMapSkip`s (which `popPromise` and remove their `promisesIndexFromInputIndex` entries)
 					while (promisesIndexFromInputIndex[outputIndex] === undefined) {
 						outputIndex += 1;
 					}
@@ -323,25 +323,9 @@ export function pMapIterable(
 				runningMappersCount--;
 
 				if (returnValue === pMapSkip) {
-					// If `preserveOrder: true`, resolve to the next inputIndex's promise, in case we are already being `await`ed
-					// NOTE: no chance that `myInputIndex + 1`-spawning code is waiting to be executed in another part of the event loop,
-					// but currently `promisesIndexFromInputIndex[myInputIndex + 1] === undefined` (so that we incorrectly skip this `if` condition and
-					// instead call `mapNext`, causing this potentially-currently-awaited promise to resolve to the result of mapping an element
-					// of the input iterable that was produced later `myInputIndex + 1`, i.e., no chance `promises` resolve out of order, because:
-					// all `trySpawn`/`mapNext` calls execute their bookkeeping synchronously, before any `await`s, so we cannot observe an intermediate
-					// state in which input the promise mapping iterable element `myInputIndex + 1` has not been recorded in the `promisesIndexFromInputIndex` ledger.
-					if (preserveOrder && promisesIndexFromInputIndex[myInputIndex + 1] !== undefined) {
-						popPromise(myInputIndex);
-						// Spawn if still below backpressure limit and just dropped below concurrency limit
-						trySpawn();
-						return promises[promisesIndexFromInputIndex[myInputIndex + 1]];
-					}
-
-					// Otherwise, start mapping the next input element
-					delete promisesIndexFromInputIndex[myInputIndex];
-					// Not necessary to `delete inputIndexFromPromisesIndex[promisesIndex]` since `inputIndexFromPromisesIndex[promisesIndex]` is only used
-					// when this promise resolves, but by that point this recursive `mapNext(promisesIndex)` call will have necessarily overwritten it.
-					return mapNext(promisesIndex);
+					// We `popPromise` ourselves so that we don't eat into the backpressure if we don't get `await`ed/cleanup up by the main loop for a while.
+					// This is safe because the main loop will forgo `popPromise` when `pMapSkip` is produced.
+					popPromise(myInputIndex);
 				}
 
 				// Spawn if still below backpressure limit and just dropped below concurrency limit
@@ -361,8 +345,18 @@ export function pMapIterable(
 				// without yielding to the event loop, so no consumers (namely `nextPromise`)
 				// can observe the intermediate state.
 				const promisesIndex = promises.length++;
-				promises[promisesIndex] = mapNext(promisesIndex);
-				promises[promisesIndex].then(p => promiseEmitter.dispatchEvent(new CustomEvent(promiseEmitterEvent, {detail: p})));
+
+				const promise = mapNext(promisesIndex);
+				promise.then(p => {
+					promiseEmitter.dispatchEvent(new CustomEvent(promiseEmitterEvent, {detail: p}));
+				});
+				// If the input iterable is sync, produces a non-promise, and maps to a non-promise-wrapped `pMapSkip` (no Promises anywhere),
+				// then `mapNext` may execute `popPromise` synchronously, which removes the empty array entry we created above and
+				// deletes information pertaining to `promisesIndex` from the ledgers, only to have us confound the effort by writing
+				// back into `promises` again here.
+				if (promises[promisesIndex] === undefined) {
+					promises[promisesIndex] = promise;
+				}
 			}
 
 			// Bootstrap `promises`
@@ -370,6 +364,12 @@ export function pMapIterable(
 
 			while (promises.length > 0) {
 				const {result: {error, done, value}, inputIndex} = await nextPromise(); // eslint-disable-line no-await-in-loop
+
+				if (value === pMapSkip) {
+					// `mapNext` already called `popPromise` and `trySpawn` upon observing `pMapSkip`
+					continue;
+				}
+
 				popPromise(inputIndex);
 
 				if (error) {
