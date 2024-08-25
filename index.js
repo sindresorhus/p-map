@@ -348,7 +348,9 @@ export function pMapIterable(
 
 				const promise = mapNext(promisesIndex);
 				promise.then(p => {
-					promiseEmitter.dispatchEvent(new CustomEvent(promiseEmitterEvent, {detail: p}));
+					const event = new Event(promiseEmitterEvent);
+					event.detail = p;
+					promiseEmitter.dispatchEvent(event);
 				});
 				// If the input iterable is sync, produces a non-promise, and maps to a non-promise-wrapped `pMapSkip` (no Promises anywhere),
 				// then `mapNext` may execute `popPromise` synchronously, which removes the empty array entry we created above and
