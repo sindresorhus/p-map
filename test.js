@@ -839,7 +839,9 @@ test('pMapIterable - preserveOrder: false - more complex example - async iterabl
 		yield * testData;
 	}
 
-	t.deepEqual(await collectAsyncIterable(pMapIterable(asyncIterable(), mapper, {concurrency: Number.POSITIVE_INFINITY, preserveOrder: false})), testData.toSorted(([_aId, aMs], [_bId, bMs]) => aMs - bMs).map(([id, _ms]) => id));
+	const sortedTestData = structuredClone(testData).sort(([_aId, aMs], [_bId, bMs]) => aMs - bMs);
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(asyncIterable(), mapper, {concurrency: Number.POSITIVE_INFINITY, preserveOrder: false})), sortedTestData.map(([id, _ms]) => id));
 });
 
 test('pMapIterable - preserveOrder: false - more complex example - sync promise-returning iterable and unbounded concurrency', async t => {
@@ -855,7 +857,9 @@ test('pMapIterable - preserveOrder: false - more complex example - sync promise-
 		yield * testData.map(d => Promise.resolve(d));
 	}
 
-	t.deepEqual(await collectAsyncIterable(pMapIterable(syncPromiseReturningIterable(), mapper, {concurrency: Number.POSITIVE_INFINITY, preserveOrder: false})), testData.toSorted(([_aId, aMs], [_bId, bMs]) => aMs - bMs).map(([id, _ms]) => id));
+	const sortedTestData = structuredClone(testData).sort(([_aId, aMs], [_bId, bMs]) => aMs - bMs);
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(syncPromiseReturningIterable(), mapper, {concurrency: Number.POSITIVE_INFINITY, preserveOrder: false})), sortedTestData.map(([id, _ms]) => id));
 });
 
 test('pMapIterable - preserveOrder: false - concurrency: 2', async t => {
