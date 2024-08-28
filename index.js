@@ -168,6 +168,7 @@ export function pMapIterable(
 	{
 		concurrency = Number.POSITIVE_INFINITY,
 		backpressure = concurrency,
+		preserveOrder = true,
 	} = {},
 ) {
 	if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
@@ -186,11 +187,38 @@ export function pMapIterable(
 		throw new TypeError(`Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${typeof backpressure})`);
 	}
 
+	if (typeof preserveOrder !== 'boolean') {
+		throw new TypeError(`Expected \`preserveOrder\` to be a boolean, got \`${preserveOrder}\` (${typeof preserveOrder})`);
+	}
+
 	return {
 		async * [Symbol.asyncIterator]() {
 			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
 			const promises = [];
+			const promiseEmitter = new EventTarget(); // Only used when `preserveOrder: false`
+			const promiseEmitterEvent = 'promiseFulfilled';
+			const nextPromise = preserveOrder
+				// Treat `promises` as a queue
+				? () => promises[0]
+				// Treat `promises` as a pool (order doesn't matter)
+				: () => Promise.race([
+					// Ensures correctness in the case that mappers resolve between the time that one `await nextPromise()` resolves and the next `nextPromise` call is made
+					// (these promises would otherwise be lost if an event emitter is not listening - the `promises` pool buffers resolved promises to be processed).
+					Promise.race(promises),
+					// Ensures correctness in the case that more promises are added to `promises` after the initial `nextPromise` call is made
+					// (these additional promises are not be included in the above `Promise.race`).
+					// This occurs when `concurrency > 1`: the first `promise` will `trySpawn` and `promises.push` another promise before `await`ing the mapper,
+					// but the ongoing `Promise.race(promises)` call from `nextPromise` is oblivious to this new promise as it was not present in `promises`
+					// when the race began.
+					new Promise(resolve => {
+						promiseEmitter.addEventListener(promiseEmitterEvent, r => resolve(r.detail), {once: true});
+					}),
+				]);
+
+			const popRandomPromise = promise => promises.splice(promises.indexOf(promise), 1);
+			const popNextPromise = preserveOrder ? _promise => promises.shift() : popRandomPromise;
+
 			let runningMappersCount = 0;
 			let isDone = false;
 			let index = 0;
@@ -212,53 +240,61 @@ export function pMapIterable(
 					// Spawn if still below concurrency and backpressure limit
 					trySpawn();
 
-					try {
-						const returnValue = await mapper(await value, index++);
+					const returnValue = await mapper(await value, index++);
 
-						runningMappersCount--;
+					runningMappersCount--;
 
-						if (returnValue === pMapSkip) {
-							const index = promises.indexOf(promise);
+					if (returnValue === pMapSkip) {
+						popRandomPromise(promise);
+					}
 
-							if (index > 0) {
-								promises.splice(index, 1);
-							}
-						}
+					// Spawn if still below backpressure limit and just dropped below concurrency limit
+					trySpawn();
 
-						// Spawn if still below backpressure limit and just dropped below concurrency limit
-						trySpawn();
-
-						return {done: false, value: returnValue};
-					} catch (error) {
+					return {done: false, value: returnValue};
+				})()
+					.catch(error => {
 						isDone = true;
 						return {error};
-					}
-				})();
+					})
+					// Include a reference to the promise so `popRandomPromise` can find `indexOf`
+					.then(result => ({result, promise}));
 
 				promises.push(promise);
+				promise.then(p => {
+					const event = new Event(promiseEmitterEvent);
+					event.detail = p;
+					promiseEmitter.dispatchEvent(event);
+				});
 			}
 
 			trySpawn();
 
 			while (promises.length > 0) {
-				const {error, done, value} = await promises[0]; // eslint-disable-line no-await-in-loop
+				const {promise, result: {error, done, value}} = await nextPromise(); // eslint-disable-line no-await-in-loop
 
-				promises.shift();
+				if (value === pMapSkip) {
+					// Promise already popped itself and ran `trySpawn`
+					continue;
+				}
+
+				popNextPromise(promise);
 
 				if (error) {
 					throw error;
 				}
 
 				if (done) {
+					if (!preserveOrder) {
+						// Consume any remaining pending promises in the pool
+						continue;
+					}
+
 					return;
 				}
 
 				// Spawn if just dropped below backpressure limit and below the concurrency limit
 				trySpawn();
-
-				if (value === pMapSkip) {
-					continue;
-				}
 
 				yield value;
 			}
