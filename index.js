@@ -7,7 +7,7 @@ export default async function pMap(
 		signal,
 	} = {},
 ) {
-	return new Promise((resolve, reject_) => {
+	return new Promise((resolve_, reject_) => {
 		if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
 			throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
 		}
@@ -30,10 +30,24 @@ export default async function pMap(
 		let currentIndex = 0;
 		const iterator = iterable[Symbol.iterator] === undefined ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
 
+		const signalListener = () => {
+			reject(signal.reason);
+		};
+
+		const cleanup = () => {
+			signal?.removeEventListener('abort', signalListener);
+		};
+
+		const resolve = value => {
+			resolve_(value);
+			cleanup();
+		};
+
 		const reject = reason => {
 			isRejected = true;
 			isResolved = true;
 			reject_(reason);
+			cleanup();
 		};
 
 		if (signal) {
@@ -41,9 +55,7 @@ export default async function pMap(
 				reject(signal.reason);
 			}
 
-			signal.addEventListener('abort', () => {
-				reject(signal.reason);
-			});
+			signal.addEventListener('abort', signalListener, {once: true});
 		}
 
 		const next = async () => {
