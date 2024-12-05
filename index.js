@@ -35,9 +35,7 @@ export default async function pMap(
 		};
 
 		const cleanup = () => {
-			if (signal) {
-				signal.removeEventListener('abort', signalListener);
-			}
+			signal?.removeEventListener('abort', signalListener);
 		};
 
 		const resolve = value => {
