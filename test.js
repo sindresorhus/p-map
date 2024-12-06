@@ -637,6 +637,23 @@ test('pMapIterable - backpressure', async t => {
 	t.is(currentValue, 40);
 });
 
+test('pMapIterable - async input, backpressure > concurrency', async t => {
+	async function * source() {
+		yield 1;
+		yield 2;
+		yield 3;
+	}
+
+	const log = [];
+	await collectAsyncIterable(pMapIterable(source(), async n => {
+		log.push(n);
+		await delay(100);
+		log.push(n);
+	}, {concurrency: 1, backpressure: 2}));
+
+	t.deepEqual(log, [1, 1, 2, 2, 3, 3]);
+});
+
 test('pMapIterable - pMapSkip', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable([
 		1,
