@@ -92,6 +92,39 @@ Maximum number of promises returned by `mapper` that have resolved but not yet c
 
 Useful whenever you are consuming the iterable slower than what the mapper function can produce concurrently. For example, to avoid making an overwhelming number of HTTP requests if you are saving each of the results to a database.
 
+##### preserveOrder
+
+**Only for `pMapIterable`**
+
+Type: `boolean`\
+Default: `true`
+
+Whether the output iterable should produce the results of the `mapper` on elements of the `input` iterable in the same order as the elements were produced.
+If `false`, `mapper` results will be produced in the order they are available, which may not match the order the `mapper` inputs were produced by the `input` iterable, but may improve throughput.
+
+```js
+import {pMapIterable} from 'p-map';
+import delay from 'delay';
+
+const orderPreservingIterator = pMapIterable([[1, 100], [2, 10], [3, 5]], async ([value, delayMs]) => {
+	await delay(delayMs);
+	return value;
+}, {concurrency: 2, preserveOrder: true});
+// t=0ms
+await orderPreservingIterator.next(); // 1 produced at t=100ms
+await orderPreservingIterator.next(); // 2 produced at t=100ms
+await orderPreservingIterator.next(); // 3 produced at t=105ms
+
+const throughputOptimizingIterator = pMapIterable([[1, 100], [2, 10], [3, 5]], async ([value, delayMs]) => {
+	await delay(delayMs);
+	return value;
+}, {concurrency: 2, preserveOrder: false});
+// t=0ms
+await throughputOptimizingIterator.next(); // 2 produced at t=10ms
+await throughputOptimizingIterator.next(); // 3 produced at t=15ms
+await throughputOptimizingIterator.next(); // 1 produced at t=100ms
+```
+
 ##### stopOnError
 
 **Only for `pMap`**
