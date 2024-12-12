@@ -102,6 +102,10 @@ class ThrowingIterator {
 	}
 }
 
+function rangeAround(expected) {
+	return {start: expected - 5, end: expected + 50};
+}
+
 test('main', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(sharedInput, mapper), [10, 20, 30]);
@@ -545,7 +549,7 @@ test('pMapIterable - empty', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable([], mapper)), []);
 });
 
-test('pMapIterable - iterable that throws', async t => {
+test('pMapIterable - async iterable that throws', async t => {
 	let isFirstNextCall = true;
 
 	const iterable = {
@@ -568,8 +572,23 @@ test('pMapIterable - iterable that throws', async t => {
 	await t.throwsAsync(iterator.next(), {message: 'foo'});
 });
 
-test('pMapIterable - mapper that throws', async t => {
+test('pMapIterable - sync iterable that throws', async t => {
+	function * throwingGenerator() { // eslint-disable-line require-yield
+		throw new Error('foo');
+	}
+
+	const iterator = pMapIterable(throwingGenerator(), mapper)[Symbol.asyncIterator]();
+	await t.throwsAsync(() => iterator.next(), {message: 'foo'});
+});
+
+test('pMapIterable - async mapper that throws', async t => {
 	await t.throwsAsync(collectAsyncIterable(pMapIterable(sharedInput, async () => {
+		throw new Error('foo');
+	})), {message: 'foo'});
+});
+
+test('pMapIterable - sync mapper that throws', async t => {
+	await t.throwsAsync(collectAsyncIterable(pMapIterable(sharedInput, () => {
 		throw new Error('foo');
 	})), {message: 'foo'});
 });
@@ -607,9 +626,9 @@ test('pMapIterable - concurrency: 2', async t => {
 
 	assertInRange(t, times.get(10), {start: 0, end: 50});
 	assertInRange(t, times.get(20), {start: 0, end: 50});
-	assertInRange(t, times.get(30), {start: 200, end: 250});
-	assertInRange(t, times.get(40), {start: 300, end: 350});
-	assertInRange(t, times.get(50), {start: 300, end: 350});
+	assertInRange(t, times.get(30), rangeAround(200));
+	assertInRange(t, times.get(40), rangeAround(300));
+	assertInRange(t, times.get(50), rangeAround(300));
 });
 
 test('pMapIterable - backpressure', async t => {
@@ -637,10 +656,290 @@ test('pMapIterable - backpressure', async t => {
 	t.is(currentValue, 40);
 });
 
-test('pMapIterable - pMapSkip', async t => {
+test('pMapIterable - complex pMapSkip pattern - concurrency 1', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable([
-		1,
 		pMapSkip,
+		1,
 		2,
-	], async value => value)), [1, 2]);
+		3,
+		pMapSkip,
+		4,
+		5,
+		pMapSkip,
+		pMapSkip,
+		6,
+		7,
+		8,
+		pMapSkip,
+	], async value => value)), [1, 2, 3, 4, 5, 6, 7, 8]);
 });
+
+test('pMapIterable - complex pMapSkip pattern - concurrency 2', async t => {
+	t.deepEqual(await collectAsyncIterable(pMapIterable([
+		pMapSkip,
+		1,
+		2,
+		3,
+		pMapSkip,
+		4,
+		5,
+		pMapSkip,
+		pMapSkip,
+		6,
+		7,
+		8,
+		pMapSkip,
+	], async value => value, {concurrency: 2})), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+test('pMapIterable - complex pMapSkip pattern - concurrency 2 - preserveOrder: false', async t => {
+	const result = await collectAsyncIterable(pMapIterable([
+		pMapSkip,
+		1,
+		2,
+		3,
+		pMapSkip,
+		4,
+		5,
+		pMapSkip,
+		pMapSkip,
+		6,
+		7,
+		8,
+		pMapSkip,
+	], async value => value, {concurrency: 2, preserveOrder: false}));
+	const resultSet = new Set(result);
+	t.assert(resultSet.has(1));
+	t.assert(resultSet.has(2));
+	t.assert(resultSet.has(3));
+	t.assert(resultSet.has(4));
+	t.assert(resultSet.has(5));
+	t.assert(resultSet.has(6));
+	t.assert(resultSet.has(7));
+	t.assert(resultSet.has(8));
+	t.assert(result.length === 8);
+});
+
+test('pMapIterable - pMapSkip + preserveOrder: true + next input mapping promise pending - eagerly spawns next promise', async t => {
+	const end = timeSpan();
+	const testData = [
+		[pMapSkip, 100],
+		[2, 200],
+		[3, 100], // Ensure 3 is spawned when pMapSkip ends (otherwise, overall runtime will be 300 ms)
+	];
+	const result = await collectAsyncIterable(pMapIterable(testData, mapper, {preserveOrder: true, concurrency: 2}));
+	assertInRange(t, end(), rangeAround(200));
+	t.deepEqual(result, [2, 3]);
+});
+
+test('pMapIterable - async iterable input', async t => {
+	const result = await collectAsyncIterable(pMapIterable(new AsyncTestData(sharedInput), mapper));
+	t.deepEqual(result, [10, 20, 30]);
+});
+
+test('pMapIterable - pMapSkip + preserveOrder: true - preserves order, even when next input needs to be awaited', async t => {
+	const result = await collectAsyncIterable(pMapIterable([1, 2, 3], (_value, index) => {
+		switch (index) {
+			case 0: {
+				return pMapSkip;
+			}
+
+			case 1: {
+				return delay(100, {value: 2});
+			}
+
+			case 2: {
+				return 3;
+			}
+
+			default: {
+				return undefined;
+			}
+		}
+	}, {concurrency: 2, preserveOrder: true}));
+	t.deepEqual(result, [2, 3]);
+});
+
+function * promiseGenerator() {
+	yield (async () => {
+		await delay(100);
+		return 1;
+	})();
+	yield (async () => {
+		await delay(100);
+		return 2;
+	})();
+	yield (async () => {
+		await delay(100);
+		return 3;
+	})();
+}
+
+// Differs from `AsyncTestData` because it is not a generator:
+// each `next` yields a promise that does not wait for previous `next` promises to finish.
+const asyncIterableDoingWorkOnEachNext = (start, stop) => {
+	let i = start;
+	return {
+		[Symbol.asyncIterator]() {
+			return {
+				async next() {
+					const me = i++;
+					if (me > stop) {
+						return {done: true};
+					}
+
+					await delay(100);
+					return {done: false, value: me};
+				},
+			};
+		},
+	};
+};
+
+test('pMapIterable - eager spawn when input iterable returns promise', async t => {
+	const end = timeSpan();
+	await collectAsyncIterable(pMapIterable(asyncIterableDoingWorkOnEachNext(1, 3), value => value, /* value => delay(100, {value}), */{concurrency: 5}));
+	assertInRange(t, end(), rangeAround(100));
+});
+
+test('pMapIterable - eager spawn when input iterable returns promise incurs little overhead', async t => {
+	const end = timeSpan();
+	await collectAsyncIterable(pMapIterable(promiseGenerator(), value => delay(100, {value}), {concurrency: 100}));
+	assertInRange(t, end(), rangeAround(200));
+});
+
+test('pMapIterable - preserveOrder: false - yields mappings as they resolve', async t => {
+	const end = timeSpan();
+	const result = await collectAsyncIterable(pMapIterable(sharedInput, mapper, {preserveOrder: false}));
+	t.deepEqual(result, [30, 20, 10]);
+	assertInRange(t, end(), rangeAround(300));
+});
+
+test('pMapIterable - preserveOrder: false - more complex example - sync iterable and bounded concurrency', async t => {
+	t.deepEqual(await collectAsyncIterable(pMapIterable([
+		[1, 200],
+		[2, 100],
+		[3, 150],
+		[4, 200],
+		[5, 100],
+		[6, 75],
+	], mapper, {concurrency: 3, preserveOrder: false})), [2, 3, 1, 5, 6, 4]);
+});
+
+test('pMapIterable - preserveOrder: false - more complex example - async iterable and unbounded concurrency', async t => {
+	const testData = [
+		[1, 200],
+		[2, 125],
+		[3, 150],
+		[4, 200],
+		[5, 100],
+		[6, 75],
+	];
+	async function * asyncIterable() {
+		yield * testData;
+	}
+
+	const sortedTestData = structuredClone(testData).sort(([_aId, aMs], [_bId, bMs]) => aMs - bMs);
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(asyncIterable(), mapper, {concurrency: Number.POSITIVE_INFINITY, preserveOrder: false})), sortedTestData.map(([id, _ms]) => id));
+});
+
+test('pMapIterable - preserveOrder: false - more complex example - sync promise-returning iterable and unbounded concurrency', async t => {
+	const testData = [
+		[1, 200],
+		[2, 125],
+		[3, 150],
+		[4, 225],
+		[5, 100],
+		[6, 75],
+	];
+	function * syncPromiseReturningIterable() {
+		yield * testData.map(d => Promise.resolve(d));
+	}
+
+	const sortedTestData = structuredClone(testData).sort(([_aId, aMs], [_bId, bMs]) => aMs - bMs);
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(syncPromiseReturningIterable(), mapper, {concurrency: Number.POSITIVE_INFINITY, preserveOrder: false})), sortedTestData.map(([id, _ms]) => id));
+});
+
+test('pMapIterable - preserveOrder: false - concurrency: 2', async t => {
+	const input = [100, 200, 10, 36, 13, 45];
+	const times = new Map();
+	const end = timeSpan();
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(input, value => {
+		times.set(value, end());
+		return delay(value, {value});
+	}, {concurrency: 2, backpressure: Number.POSITIVE_INFINITY, preserveOrder: false})), [100, 10, 36, 13, 200, 45]);
+
+	assertInRange(t, times.get(100), rangeAround(0));
+	assertInRange(t, times.get(200), rangeAround(0));
+	assertInRange(t, times.get(10), rangeAround(times.get(100) + 100));
+	assertInRange(t, times.get(36), rangeAround(times.get(10) + 10));
+	assertInRange(t, times.get(13), rangeAround(times.get(36) + 36));
+	assertInRange(t, times.get(45), rangeAround(times.get(13) + 13));
+});
+
+test('pMapIterable - preserveOrder: false - backpressure', async t => {
+	// Adjust from 300 to 250 so timings don't align, to deflake
+	const adjustedLongerSharedInput = [...longerSharedInput];
+	adjustedLongerSharedInput[0] = [longerSharedInput[0][0], 250];
+
+	let currentValue;
+
+	// Concurrency option is forced by an early check
+	const asyncIterator = pMapIterable(adjustedLongerSharedInput, async value => {
+		currentValue = await mapper(value);
+		return currentValue;
+	}, {backpressure: 2, concurrency: 2, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const {value: value1} = await asyncIterator.next();
+	t.is(value1, 20);
+
+	// If backpressure is not respected, than all items will be evaluated in this time
+	await delay(600);
+
+	t.is(currentValue, 30);
+
+	const {value: value2} = await asyncIterator.next();
+	t.is(value2, 10);
+
+	await delay(100);
+
+	t.is(currentValue, 40);
+});
+
+test('pMapIterable - preserveOrder: false - throws first error to settle', async t => {
+	await t.throwsAsync(collectAsyncIterable(pMapIterable([
+		[async () => {
+			throw new Error('foo');
+		}, 30],
+		[() => {
+			throw new Error('bar');
+		}, 10],
+	], mapper, {preserveOrder: false, concurrency: 2})), {message: 'bar'});
+});
+
+test('pMapIterable - {concurrency: 1, backpressure: 2} => no concurrent mappers (#76)', async t => {
+	const theLog = [];
+	const log = message => theLog.push(message);
+	const startLog = n => `${n}: mapper start`;
+	const endLog = n => `${n}: mapper end`;
+
+	async function * source() {
+		yield 1;
+		yield 2;
+		yield 3;
+	}
+
+	await collectAsyncIterable(pMapIterable(source(), async n => {
+		log(startLog(n));
+		await delay(100);
+		log(endLog(n));
+	}, {
+		concurrency: 1,
+		backpressure: 2,
+	}));
+	t.deepEqual(theLog, [startLog(1), endLog(1), startLog(2), endLog(2), startLog(3), endLog(3)]);
+});
+
