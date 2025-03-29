@@ -205,47 +205,50 @@ export function pMapIterable(
 			let isDone = false;
 			let index = 0;
 
+			const spawnInto = async deferredPromise => {
+				let result;
+				try {
+					const {done, value} = await iterator.next();
+
+					if (done) {
+						result = {done: true};
+					} else {
+						runningMappersCount++;
+
+						// Spawn if still below concurrency and backpressure limit
+						trySpawn();
+
+						const returnValue = await mapper(await value, index++);
+
+						runningMappersCount--;
+
+						if (returnValue === pMapSkip) {
+							popSpecificPromise(deferredPromise.promise);
+						}
+
+						// Spawn if still below backpressure limit and just dropped below concurrency limit
+						trySpawn();
+
+						result = {done: false, value: returnValue};
+					}
+				} catch (error) {
+					isDone = true;
+					result = {error};
+				}
+
+				deferredPromise.resolve({promise: deferredPromise.promise, result});
+				somePromiseHasSettled?.resolve(deferredPromise.promise);
+			};
+
 			function trySpawn() {
 				if (isDone || !(runningMappersCount < concurrency && promises.length < backpressure)) {
 					return;
 				}
 
-				const promise = (async () => {
-					const {done, value} = await iterator.next();
-
-					if (done) {
-						return {done: true};
-					}
-
-					runningMappersCount++;
-
-					// Spawn if still below concurrency and backpressure limit
-					trySpawn();
-
-					const returnValue = await mapper(await value, index++);
-
-					runningMappersCount--;
-
-					if (returnValue === pMapSkip) {
-						popSpecificPromise(promise);
-					}
-
-					// Spawn if still below backpressure limit and just dropped below concurrency limit
-					trySpawn();
-
-					return {done: false, value: returnValue};
-				})()
-					.catch(error => {
-						isDone = true;
-						return {error};
-					})
-					// Include a reference to the promise so `popRandomPromise` can find `indexOf`
-					.then(result => ({result, promise}));
-
-				promises.push(promise);
-				promise.then(p => {
-					somePromiseHasSettled.resolve(p);
-				});
+				// Create a deferred promise so `spawnInto` can `popSpecificPromise` what we push into `promises` (`indexOf` needs object reference)
+				const deferredPromise = pDefer();
+				promises.push(deferredPromise.promise);
+				spawnInto(deferredPromise);
 			}
 
 			trySpawn();
