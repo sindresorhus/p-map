@@ -254,7 +254,9 @@ export function pMapIterable(
 			trySpawn();
 
 			while (promises.length > 0) {
-				somePromiseHasSettled = pDefer();
+				if (!preserveOrder) {
+					somePromiseHasSettled = pDefer();
+				}
 
 				const {promise, result: {error, done, value}} = await ( // eslint-disable-line no-await-in-loop
 					preserveOrder
