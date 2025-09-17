@@ -22,6 +22,15 @@ export type Options = BaseOptions & {
 	readonly stopOnError?: boolean;
 
 	/**
+	When `true`, preserves the caller's stack trace in mapper errors for better debugging.
+
+	This adds the calling stack frames to errors thrown by the mapper function, making it easier to trace where the pMap call originated. However, it has some performance overhead as it captures stack traces upfront.
+
+	@default false
+	*/
+	readonly preserveStackTrace?: boolean;
+
+	/**
 	You can abort the promises using [`AbortController`](https://developer.mozilla.org/en-US/docs/Web/API/AbortController).
 
 	@example
@@ -53,6 +62,15 @@ export type IterableOptions = BaseOptions & {
 	Default: `options.concurrency`
 	*/
 	readonly backpressure?: number;
+
+	/**
+	When `true`, preserves the caller's stack trace in mapper errors for better debugging.
+
+	This adds the calling stack frames to errors thrown by the mapper function, making it easier to trace where the pMapIterable call originated. However, it has some performance overhead as it captures stack traces upfront.
+
+	@default false
+	*/
+	readonly preserveStackTrace?: boolean;
 };
 
 type MaybePromise<T> = T | Promise<T>;
