@@ -212,8 +212,9 @@ export function pMapIterable(
 					return;
 				}
 
+				pendingPromisesCount++;
+
 				const promise = (async () => {
-					pendingPromisesCount++;
 					const {done, value} = await iterator.next();
 
 					if (done) {
@@ -242,6 +243,7 @@ export function pMapIterable(
 
 						return {done: false, value: returnValue};
 					} catch (error) {
+						pendingPromisesCount--;
 						isDone = true;
 						return {error};
 					}
