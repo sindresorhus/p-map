@@ -661,3 +661,82 @@ test('pMapIterable - pMapSkip', async t => {
 		2,
 	], async value => value)), [1, 2]);
 });
+
+test('mapper error preserves caller stack when opt-in enabled', async t => {
+	async function runPromisePmap() {
+		await pMap([
+			async () => {
+				throw new Error('stop');
+			},
+		], async mapper => mapper(), {preserveStackTrace: true});
+	}
+
+	const error = await t.throwsAsync(runPromisePmap, {message: 'stop'});
+
+	t.true(error.stack.includes('runPromisePmap'));
+});
+
+test('mapper error does not preserve stack by default', async t => {
+	function uniqueFunctionName() {
+		return pMap([
+			() => {
+				throw new Error('stop');
+			},
+		], mapper => mapper());
+	}
+
+	const error = await t.throwsAsync(uniqueFunctionName, {message: 'stop'});
+
+	// Should not include our stack enhancement
+	t.false(error.stack.includes('uniqueFunctionName'));
+});
+
+test('aggregate error stacks preserve caller stack when opt-in enabled', async t => {
+	async function runPromisePmapStopOnErrorFalse() {
+		await pMap([
+			async () => {
+				throw new Error('first');
+			},
+			async () => {
+				throw new Error('second');
+			},
+		], async mapper => mapper(), {concurrency: 2, stopOnError: false, preserveStackTrace: true});
+	}
+
+	const error = await t.throwsAsync(runPromisePmapStopOnErrorFalse, {instanceOf: AggregateError});
+
+	t.true(error.stack.includes('runPromisePmapStopOnErrorFalse'));
+
+	for (const innerError of error.errors) {
+		t.true(innerError.stack.includes('runPromisePmapStopOnErrorFalse'));
+	}
+});
+
+test('pMapIterable mapper error preserves caller stack when opt-in enabled', async t => {
+	async function runPMapIterable() {
+		await collectAsyncIterable(pMapIterable([
+			async () => {
+				throw new Error('stop');
+			},
+		], async mapper => mapper(), {preserveStackTrace: true}));
+	}
+
+	const error = await t.throwsAsync(runPMapIterable, {message: 'stop'});
+
+	t.true(error.stack.includes('runPMapIterable'));
+});
+
+test('pMapIterable mapper error does not preserve stack by default', async t => {
+	function uniqueIterableFunction() {
+		return collectAsyncIterable(pMapIterable([
+			() => {
+				throw new Error('stop');
+			},
+		], mapper => mapper()));
+	}
+
+	const error = await t.throwsAsync(uniqueIterableFunction, {message: 'stop'});
+
+	// Should not include our stack enhancement
+	t.false(error.stack.includes('uniqueIterableFunction'));
+});

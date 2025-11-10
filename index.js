@@ -1,3 +1,62 @@
+const preserveStackMarker = Symbol('pMapPreserveStack');
+const noop = () => {};
+
+function createStackPreserver() {
+	const {stack: capturedStack} = new Error('pMap stack capture');
+
+	if (typeof capturedStack !== 'string') {
+		return noop;
+	}
+
+	// Detect stack format across different JavaScript engines
+	let frameSeparator;
+
+	// Node.js and Chrome: '\n    at '
+	if (capturedStack.includes('\n    at ')) {
+		frameSeparator = '\n    at ';
+	} else if (capturedStack.includes('@')) {
+		// Firefox: '\n' (simpler format)
+		frameSeparator = '\n';
+	} else if (capturedStack.includes('\n\t')) {
+		// Safari/JSC: varies, try common patterns
+		frameSeparator = '\n\t';
+	} else {
+		// Fallback to generic newline separation
+		frameSeparator = '\n';
+	}
+
+	const firstFrameIndex = capturedStack.indexOf(frameSeparator);
+
+	if (firstFrameIndex === -1) {
+		return noop;
+	}
+
+	const secondFrameIndex = capturedStack.indexOf(frameSeparator, firstFrameIndex + frameSeparator.length);
+
+	const preservedStackSuffix = secondFrameIndex === -1
+		? capturedStack.slice(firstFrameIndex) // If only one frame exists, preserve from first frame
+		: capturedStack.slice(secondFrameIndex);
+
+	return error => {
+		try {
+			if (!error || typeof error !== 'object' || error[preserveStackMarker]) {
+				return;
+			}
+
+			const {stack} = error;
+
+			if (typeof stack !== 'string') {
+				return;
+			}
+
+			error.stack = stack + preservedStackSuffix;
+			Object.defineProperty(error, preserveStackMarker, {value: true});
+		} catch {
+			// Silently ignore any errors in stack preservation
+		}
+	};
+}
+
 export default async function pMap(
 	iterable,
 	mapper,
@@ -5,6 +64,7 @@ export default async function pMap(
 		concurrency = Number.POSITIVE_INFINITY,
 		stopOnError = true,
 		signal,
+		preserveStackTrace = false,
 	} = {},
 ) {
 	return new Promise((resolve_, reject_) => {
@@ -19,6 +79,8 @@ export default async function pMap(
 		if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
 			throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
 		}
+
+		const preserveStack = preserveStackTrace ? createStackPreserver() : noop;
 
 		const result = [];
 		const errors = [];
@@ -46,6 +108,7 @@ export default async function pMap(
 		const reject = reason => {
 			isRejected = true;
 			isResolved = true;
+			preserveStack(reason);
 			reject_(reason);
 			cleanup();
 		};
@@ -130,6 +193,8 @@ export default async function pMap(
 					resolvingCount--;
 					await next();
 				} catch (error) {
+					preserveStack(error);
+
 					if (stopOnError) {
 						reject(error);
 					} else {
@@ -143,6 +208,7 @@ export default async function pMap(
 						try {
 							await next();
 						} catch (error) {
+							preserveStack(error);
 							reject(error);
 						}
 					}
@@ -180,6 +246,7 @@ export function pMapIterable(
 	{
 		concurrency = Number.POSITIVE_INFINITY,
 		backpressure = concurrency,
+		preserveStackTrace = false,
 	} = {},
 ) {
 	if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
@@ -197,6 +264,8 @@ export function pMapIterable(
 	if (!((Number.isSafeInteger(backpressure) && backpressure >= concurrency) || backpressure === Number.POSITIVE_INFINITY)) {
 		throw new TypeError(`Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${typeof backpressure})`);
 	}
+
+	const preserveStack = preserveStackTrace ? createStackPreserver() : noop;
 
 	return {
 		async * [Symbol.asyncIterator]() {
@@ -242,6 +311,7 @@ export function pMapIterable(
 
 						return {done: false, value: returnValue};
 					} catch (error) {
+						preserveStack(error);
 						isDone = true;
 						return {error};
 					}
@@ -253,11 +323,21 @@ export function pMapIterable(
 			trySpawn();
 
 			while (promises.length > 0) {
-				const {error, done, value} = await promises[0]; // eslint-disable-line no-await-in-loop
+				let nextResult;
+
+				try {
+					nextResult = await promises[0]; // eslint-disable-line no-await-in-loop
+				} catch (error) {
+					preserveStack(error);
+					throw error;
+				}
+
+				const {error, done, value} = nextResult;
 
 				promises.shift();
 
 				if (error) {
+					preserveStack(error);
 					throw error;
 				}
 
