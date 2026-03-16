@@ -205,16 +205,15 @@ test('all pMapSkips', async t => {
 test('all mappers should run when concurrency is infinite, even after stop-on-error happened', async t => {
 	const input = [1, async () => delay(300, {value: 2}), 3];
 	const mappedValues = [];
-	await t.throwsAsync(
-		pMap(input, async value => {
-			value = typeof value === 'function' ? await value() : value;
-			mappedValues.push(value);
-			if (value === 1) {
-				await delay(100);
-				throw new Error('Oops!');
-			}
-		}),
-	);
+	const promise = pMap(input, async value => {
+		value = typeof value === 'function' ? await value() : value;
+		mappedValues.push(value);
+		if (value === 1) {
+			await delay(100);
+			throw new Error('Oops!');
+		}
+	});
+	await t.throwsAsync(promise);
 	await delay(500);
 	t.deepEqual(mappedValues, [1, 3, 2]);
 });
@@ -468,15 +467,12 @@ test('no unhandled rejected promises from mapper throws - infinite concurrency',
 test('no unhandled rejected promises from mapper throws - concurrency 1', async t => {
 	const input = [1, 2, 3];
 	const mappedValues = [];
-	await t.throwsAsync(
-		pMap(input, async value => {
-			mappedValues.push(value);
-			await delay(100);
-			throw new Error(`Oops! ${value}`);
-		},
-		{concurrency: 1}),
-		{message: 'Oops! 1'},
-	);
+	const promise = pMap(input, async value => {
+		mappedValues.push(value);
+		await delay(100);
+		throw new Error(`Oops! ${value}`);
+	}, {concurrency: 1});
+	await t.throwsAsync(promise, {message: 'Oops! 1'});
 	t.deepEqual(mappedValues, [1]);
 });
 
