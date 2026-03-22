@@ -39,7 +39,7 @@ console.log(result);
 
 ### pMap(input, mapper, options?)
 
-Returns a `Promise` that is fulfilled when all promises in `input` and ones returned from `mapper` are fulfilled, or rejects if any of the promises reject. The fulfilled value is an `Array` of the fulfilled values returned from `mapper` in `input` order.
+Returns a `Promise` that is fulfilled when all promises in `input` and the ones returned from `mapper` are fulfilled, or rejects if any of the promises reject. The fulfilled value is an `Array` of the fulfilled values returned from `mapper` in `input` order.
 
 ### pMapIterable(input, mapper, options?)
 
