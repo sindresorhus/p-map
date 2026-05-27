@@ -159,6 +159,27 @@ console.log(result);
 //=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
 ```
 
+## Recipes
+
+### Rate limiting
+
+This package controls how many mapper promises run concurrently. To limit how often the mapper starts, compose it with a rate limiter like [`p-throttle`](https://github.com/sindresorhus/p-throttle):
+
+```js
+import pThrottle from 'p-throttle';
+import pMap from 'p-map';
+
+const throttle = pThrottle({
+	limit: 1,
+	interval: 1000,
+	strict: true,
+});
+
+const result = await pMap(input, throttle(mapper), {concurrency: 2});
+```
+
+For more advanced scheduling, use [`p-queue`](https://github.com/sindresorhus/p-queue).
+
 ## Related
 
 - [p-all](https://github.com/sindresorhus/p-all) - Run promise-returning & async functions concurrently with optional limited concurrency
