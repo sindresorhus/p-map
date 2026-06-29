@@ -541,6 +541,21 @@ test('pMapIterable - index in mapper', async t => {
 	]);
 });
 
+test('pMapIterable - index in mapper (out-of-order-settling promises)', async t => {
+	const input = [
+		delay(50, {value: 'a'}),
+		delay(10, {value: 'b'}),
+		delay(30, {value: 'c'}),
+	];
+
+	const result = [];
+	for await (const item of pMapIterable(input, async (value, index) => [value, index], {concurrency: 3})) {
+		result.push(item);
+	}
+
+	t.deepEqual(result, [['a', 0], ['b', 1], ['c', 2]]);
+});
+
 test('pMapIterable - empty', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable([], mapper)), []);
 });
