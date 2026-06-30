@@ -1,5 +1,10 @@
 import {expectType, expectAssignable} from 'tsd';
-import pMap, {pMapIterable, type Options, type Mapper, pMapSkip} from './index.js';
+import pMap, {
+	pMapIterable,
+	type Options,
+	type Mapper,
+	pMapSkip,
+} from './index.js';
 
 const sites = [
 	'https://sindresorhus.com',
