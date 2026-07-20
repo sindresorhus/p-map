@@ -1,3 +1,4 @@
+import {getEventListeners} from 'node:events';
 import test from 'ava';
 import delay from 'delay';
 import timeSpan from 'time-span';
@@ -509,6 +510,7 @@ if (globalThis.AbortController !== undefined) {
 		await t.throwsAsync(pMap([delay(1000), new AsyncTestData(100), 100], mapper, {signal: abortController.signal}), {
 			name: 'AbortError',
 		});
+		t.is(getEventListeners(abortController.signal, 'abort').length, 0);
 	});
 }
 

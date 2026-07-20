@@ -53,6 +53,7 @@ export default async function pMap(
 		if (signal) {
 			if (signal.aborted) {
 				reject(signal.reason);
+				return;
 			}
 
 			signal.addEventListener('abort', signalListener, {once: true});
