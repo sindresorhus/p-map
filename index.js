@@ -1,8 +1,27 @@
+const DEFAULT_CONCURRENCY = Number.POSITIVE_INFINITY;
+
+let globalConcurrency = DEFAULT_CONCURRENCY;
+
+function validateConcurrency(value) {
+	if (!((Number.isSafeInteger(value) && value >= 1) || value === Number.POSITIVE_INFINITY)) {
+		throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${value}\` (${typeof value})`);
+	}
+}
+
+export function setDefaultConcurrency(concurrency) {
+	validateConcurrency(concurrency);
+	globalConcurrency = concurrency;
+}
+
+export function getDefaultConcurrency() {
+	return globalConcurrency;
+}
+
 export default async function pMap(
 	iterable,
 	mapper,
 	{
-		concurrency = Number.POSITIVE_INFINITY,
+		concurrency = globalConcurrency,
 		stopOnError = true,
 		signal,
 	} = {},
@@ -16,9 +35,7 @@ export default async function pMap(
 			throw new TypeError('Mapper function is required');
 		}
 
-		if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
-			throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
-		}
+		validateConcurrency(concurrency);
 
 		const result = [];
 		const errors = [];
@@ -179,7 +196,7 @@ export function pMapIterable(
 	iterable,
 	mapper,
 	{
-		concurrency = Number.POSITIVE_INFINITY,
+		concurrency = globalConcurrency,
 		backpressure = concurrency,
 	} = {},
 ) {
@@ -191,9 +208,7 @@ export function pMapIterable(
 		throw new TypeError('Mapper function is required');
 	}
 
-	if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
-		throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
-	}
+	validateConcurrency(concurrency);
 
 	if (!((Number.isSafeInteger(backpressure) && backpressure >= concurrency) || backpressure === Number.POSITIVE_INFINITY)) {
 		throw new TypeError(`Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${typeof backpressure})`);

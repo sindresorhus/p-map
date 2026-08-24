@@ -4,10 +4,37 @@ type BaseOptions = {
 
 	Must be an integer from 1 and up or `Infinity`.
 
+	Defaults to the global default concurrency, which is `Infinity` unless changed with `setDefaultConcurrency()`.
+
 	@default Infinity
 	*/
 	readonly concurrency?: number;
 };
+
+/**
+Set the global default `concurrency` used by `pMap` and `pMapIterable` when the `concurrency` option is not explicitly provided.
+
+Must be an integer from 1 and up or `Infinity`.
+
+@throws {TypeError} If `concurrency` is not an integer from 1 and up or `Infinity`.
+
+@example
+```
+import pMap, {setDefaultConcurrency} from 'p-map';
+
+setDefaultConcurrency(10);
+
+await pMap(sites, mapper); //=> Runs with a concurrency of 10.
+```
+*/
+export function setDefaultConcurrency(concurrency: number): void;
+
+/**
+Get the current global default `concurrency`.
+
+@returns The global default concurrency. Initially `Infinity`.
+*/
+export function getDefaultConcurrency(): number;
 
 export type Options = BaseOptions & {
 	/**
