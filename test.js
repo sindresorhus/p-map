@@ -4,7 +4,7 @@ import delay from 'delay';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
 import assertInRange from './assert-in-range.js';
-import pMap, {pMapIterable, pMapSkip} from './index.js';
+import pMap, {pMapIterable, pMapSkip, setDefaultConcurrency, getDefaultConcurrency} from './index.js';
 
 const sharedInput = [
 	[async () => 10, 300],
@@ -677,4 +677,84 @@ test('pMapIterable - pMapSkip', async t => {
 		pMapSkip,
 		2,
 	], async value => value)), [1, 2]);
+});
+
+test.serial('default concurrency is Infinity', t => {
+	t.is(getDefaultConcurrency(), Number.POSITIVE_INFINITY);
+});
+
+test.serial('setDefaultConcurrency affects pMap', async t => {
+	t.teardown(() => {
+		setDefaultConcurrency(100);
+	});
+
+	setDefaultConcurrency(2);
+	t.is(getDefaultConcurrency(), 2);
+
+	let running = 0;
+	let maxRunning = 0;
+
+	await pMap(Array.from({length: 10}).fill(0), async () => {
+		running++;
+		maxRunning = Math.max(maxRunning, running);
+		await delay(10);
+		running--;
+	});
+
+	t.is(maxRunning, 2);
+});
+
+test.serial('setDefaultConcurrency affects pMapIterable', async t => {
+	t.teardown(() => {
+		setDefaultConcurrency(100);
+	});
+
+	setDefaultConcurrency(2);
+
+	let running = 0;
+	let maxRunning = 0;
+
+	await collectAsyncIterable(pMapIterable(Array.from({length: 10}).fill(0), async () => {
+		running++;
+		maxRunning = Math.max(maxRunning, running);
+		await delay(10);
+		running--;
+	}));
+
+	t.is(maxRunning, 2);
+});
+
+test.serial('explicit concurrency overrides the global default', async t => {
+	t.teardown(() => {
+		setDefaultConcurrency(100);
+	});
+
+	setDefaultConcurrency(1);
+
+	let running = 0;
+	let maxRunning = 0;
+
+	await pMap(Array.from({length: 10}).fill(0), async () => {
+		running++;
+		maxRunning = Math.max(maxRunning, running);
+		await delay(10);
+		running--;
+	}, {concurrency: Number.POSITIVE_INFINITY});
+
+	t.is(maxRunning, 10);
+	t.is(getDefaultConcurrency(), 1);
+});
+
+test.serial('setDefaultConcurrency validates its input', t => {
+	for (const value of [0, -1, 1.5, '5', Number.NaN, undefined, null]) {
+		t.throws(() => {
+			setDefaultConcurrency(value);
+		}, {instanceOf: TypeError});
+	}
+
+	t.is(getDefaultConcurrency(), 100);
+	t.notThrows(() => {
+		setDefaultConcurrency(Number.POSITIVE_INFINITY);
+	});
+	setDefaultConcurrency(100);
 });
