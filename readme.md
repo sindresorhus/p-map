@@ -80,6 +80,8 @@ Minimum: `1`
 
 Number of concurrently pending promises returned by `mapper`.
 
+Pass `Infinity` for unbounded concurrency. The default can be changed globally with [`setDefaultConcurrency()`](#setdefaultconcurrencyconcurrency).
+
 ##### backpressure
 
 **Only for `pMapIterable`**
@@ -128,6 +130,25 @@ const mapper = async value => value;
 await pMap([delay(1000), delay(1000)], mapper, {signal: abortController.signal});
 // Throws AbortError (DOMException) after 500 ms.
 ```
+
+### setDefaultConcurrency(concurrency)
+
+Set the global default `concurrency` used by both `pMap` and `pMapIterable` when the `concurrency` option is not explicitly provided.
+
+Must be an integer from 1 and up or `Infinity`. Throws a `TypeError` otherwise.
+
+```js
+import pMap, {setDefaultConcurrency} from 'p-map';
+
+setDefaultConcurrency(10);
+
+await pMap(sites, mapper); //=> Runs with a concurrency of 10.
+await pMap(sites, mapper, {concurrency: 2}); //=> Explicit option still wins.
+```
+
+### getDefaultConcurrency()
+
+Returns the current global default concurrency. Initially `Infinity`.
 
 ### pMapSkip
 
