@@ -213,6 +213,7 @@ export function pMapIterable(
 			const promises = [];
 			let pendingPromisesCount = 0;
 			let isDone = false;
+			let isIterableDone = false;
 			let index = 0;
 
 			function trySpawn() {
@@ -229,6 +230,7 @@ export function pMapIterable(
 						const {done, value} = await iterator.next();
 
 						if (done) {
+							isIterableDone = true;
 							pendingPromisesCount--;
 							return {done: true};
 						}
@@ -293,7 +295,9 @@ export function pMapIterable(
 				// Stop pulling input once the consumer stops iterating, otherwise pending skipped mappers keep spawning work.
 				isDone = true;
 
-				closeIterator(iterator);
+				if (!isIterableDone) {
+					closeIterator(iterator);
+				}
 			}
 		},
 	};

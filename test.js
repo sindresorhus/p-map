@@ -1229,3 +1229,23 @@ test.serial('a source `return()` that rejects does not affect the `pMap` rejecti
 
 	t.deepEqual(unhandledRejections, []);
 });
+
+test('pMapIterable - does not call `return()` on an exhausted source iterator', async t => {
+	let returnCallCount = 0;
+
+	const iterable = {
+		[Symbol.iterator]() {
+			let index = 0;
+			return {
+				next: () => ({done: index === 3, value: index++}),
+				return() {
+					returnCallCount++;
+					return {done: true, value: undefined};
+				},
+			};
+		},
+	};
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(iterable, async value => value, {concurrency: 2})), [0, 1, 2]);
+	t.is(returnCallCount, 0);
+});
