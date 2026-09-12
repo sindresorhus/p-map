@@ -954,3 +954,166 @@ test('pMapIterable - in-flight mappers still settle after the consumer breaks', 
 
 	t.deepEqual(settled, [0, 1, 2, 3]);
 });
+
+test('pMapIterable - closes the source iterator when the consumer breaks', async t => {
+	let isSourceClosed = false;
+
+	async function * source() {
+		try {
+			for (let index = 0; index < 100; index++) {
+				yield index;
+			}
+		} finally {
+			isSourceClosed = true;
+		}
+	}
+
+	for await (const value of pMapIterable(source(), async value => value, {concurrency: 2})) { // eslint-disable-line no-unreachable-loop
+		t.is(value, 0);
+		break;
+	}
+
+	await delay(10);
+	t.true(isSourceClosed);
+});
+
+test('pMapIterable - closes the source iterator when the consumer throws', async t => {
+	let isSourceClosed = false;
+
+	async function * source() {
+		try {
+			for (let index = 0; index < 100; index++) {
+				yield index;
+			}
+		} finally {
+			isSourceClosed = true;
+		}
+	}
+
+	await t.throwsAsync(async () => {
+		for await (const value of pMapIterable(source(), async value => value, {concurrency: 2})) { // eslint-disable-line no-unreachable-loop
+			throw new Error(`consumer error ${value}`);
+		}
+	}, {message: 'consumer error 0'});
+
+	await delay(10);
+	t.true(isSourceClosed);
+});
+
+test('pMapIterable - closes the source iterator when the mapper throws', async t => {
+	let isSourceClosed = false;
+
+	async function * source() {
+		try {
+			for (let index = 0; index < 100; index++) {
+				yield index;
+			}
+		} finally {
+			isSourceClosed = true;
+		}
+	}
+
+	await t.throwsAsync(collectAsyncIterable(pMapIterable(source(), async value => {
+		if (value === 1) {
+			throw new Error('mapper error');
+		}
+
+		return value;
+	}, {concurrency: 2})), {message: 'mapper error'});
+
+	await delay(10);
+	t.true(isSourceClosed);
+});
+
+test('pMapIterable - closes a sync source iterator when `return()` is called', async t => {
+	let returnCallCount = 0;
+
+	const iterable = {
+		[Symbol.iterator]() {
+			let index = 0;
+			return {
+				next: () => ({done: false, value: index++}),
+				return() {
+					returnCallCount++;
+					return {done: true, value: undefined};
+				},
+			};
+		},
+	};
+
+	const iterator = pMapIterable(iterable, async value => value, {concurrency: 2})[Symbol.asyncIterator]();
+	t.deepEqual(await iterator.next(), {value: 0, done: false});
+	t.deepEqual(await iterator.return(), {value: undefined, done: true});
+	t.is(returnCallCount, 1);
+});
+
+test('pMapIterable - does not close the source iterator before it is exhausted', async t => {
+	let isSourceClosed = false;
+	let isSourceExhausted = false;
+
+	async function * source() {
+		try {
+			yield 1;
+			yield 2;
+			isSourceExhausted = true;
+		} finally {
+			isSourceClosed = true;
+		}
+	}
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(source(), async value => value, {concurrency: 1})), [1, 2]);
+	t.true(isSourceExhausted);
+	t.true(isSourceClosed);
+});
+
+test.serial('pMapIterable - a source `return()` that rejects does not affect the consumer', async t => {
+	const iterable = {
+		[Symbol.asyncIterator]() {
+			let index = 0;
+			return {
+				async next() {
+					return {done: false, value: index++};
+				},
+				async return() {
+					throw new Error('return failed');
+				},
+			};
+		},
+	};
+
+	const unhandledRejections = [];
+	const onUnhandledRejection = error => {
+		unhandledRejections.push(error);
+	};
+
+	process.on('unhandledRejection', onUnhandledRejection);
+
+	try {
+		for await (const value of pMapIterable(iterable, async value => value, {concurrency: 2})) { // eslint-disable-line no-unreachable-loop
+			t.is(value, 0);
+			break;
+		}
+
+		await delay(50);
+	} finally {
+		process.off('unhandledRejection', onUnhandledRejection);
+	}
+
+	t.deepEqual(unhandledRejections, []);
+});
+
+test('pMapIterable - a source blocked in `next()` does not block the consumer from stopping', async t => {
+	async function * source() {
+		yield 0;
+		await new Promise(() => {}); // Never settles
+	}
+
+	const end = timeSpan();
+
+	for await (const value of pMapIterable(source(), async value => value, {concurrency: 2})) { // eslint-disable-line no-unreachable-loop
+		t.is(value, 0);
+		break;
+	}
+
+	t.true(end() < 100);
+});

@@ -284,6 +284,14 @@ export function pMapIterable(
 			} finally {
 				// Stop pulling input once the consumer stops iterating, otherwise pending skipped mappers keep spawning work.
 				isDone = true;
+
+				// Close the source so it can release its resources, like `for await` does.
+				// Not awaited so a source that is blocked in `next()` cannot block the consumer from stopping.
+				(async () => {
+					try {
+						await iterator.return?.();
+					} catch {}
+				})();
 			}
 		},
 	};
