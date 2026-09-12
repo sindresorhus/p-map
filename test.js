@@ -955,6 +955,134 @@ test('pMapIterable - in-flight mappers still settle after the consumer breaks', 
 	t.deepEqual(settled, [0, 1, 2, 3]);
 });
 
+test('pMapIterable - does not call the mapper for input that arrives after the consumer breaks', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	const mappedValues = [];
+
+	async function * source() {
+		yield 0;
+		await gate;
+		yield 1;
+		yield 2;
+	}
+
+	for await (const value of pMapIterable(source(), async value => { // eslint-disable-line no-unreachable-loop
+		mappedValues.push(value);
+		return value;
+	}, {concurrency: 2})) {
+		t.is(value, 0);
+		break;
+	}
+
+	release();
+	await delay(50);
+
+	t.deepEqual(mappedValues, [0]);
+});
+
+test('pMapIterable - does not call the mapper for promise input that settles after the consumer breaks', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	const mappedValues = [];
+	const input = [0, gate.then(() => 1), gate.then(() => 2)];
+
+	for await (const value of pMapIterable(input, async value => { // eslint-disable-line no-unreachable-loop
+		mappedValues.push(value);
+		return value;
+	}, {concurrency: 3})) {
+		t.is(value, 0);
+		break;
+	}
+
+	release();
+	await delay(50);
+
+	t.deepEqual(mappedValues, [0]);
+});
+
+test('pMapIterable - does not call the mapper for input that arrives after a mapper throws', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	const mappedValues = [];
+
+	async function * source() {
+		yield 0;
+		await gate;
+		yield 1;
+	}
+
+	await t.throwsAsync(collectAsyncIterable(pMapIterable(source(), async value => {
+		mappedValues.push(value);
+		throw new Error(`mapper error ${value}`);
+	}, {concurrency: 2})), {message: 'mapper error 0'});
+
+	release();
+	await delay(50);
+
+	t.deepEqual(mappedValues, [0]);
+});
+
+test('pMapIterable - does not call the mapper for input that arrives after `return()` is called', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	const mappedValues = [];
+
+	async function * source() {
+		yield 0;
+		await gate;
+		yield 1;
+	}
+
+	const iterator = pMapIterable(source(), async value => {
+		mappedValues.push(value);
+		return value;
+	}, {concurrency: 2})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {value: 0, done: false});
+	t.deepEqual(await iterator.return(), {value: undefined, done: true});
+
+	release();
+	await delay(50);
+
+	t.deepEqual(mappedValues, [0]);
+});
+
+test('pMapIterable - drops pending earlier input when a later mapper throws', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	const mappedValues = [];
+	const input = [gate.then(() => 0), 1];
+
+	const promise = t.throwsAsync(collectAsyncIterable(pMapIterable(input, async value => {
+		mappedValues.push(value);
+		throw new Error(`mapper error ${value}`);
+	}, {concurrency: 2})));
+
+	await delay(10);
+	t.deepEqual(mappedValues, [1]);
+
+	release();
+	const error = await promise;
+	t.is(error.message, 'mapper error 1');
+	t.deepEqual(mappedValues, [1]);
+});
+
 test('pMapIterable - closes the source iterator when the consumer breaks', async t => {
 	let isSourceClosed = false;
 

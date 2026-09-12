@@ -239,7 +239,15 @@ export function pMapIterable(
 						trySpawn();
 
 						const currentIndex = index++;
-						const returnValue = await mapper(await value, currentIndex);
+						const element = await value;
+
+						// The consumer stopped iterating or a mapper threw while this input was pending, so drop it instead of doing work nobody will consume.
+						if (isDone) {
+							pendingPromisesCount--;
+							return {done: false, value: pMapSkip};
+						}
+
+						const returnValue = await mapper(element, currentIndex);
 
 						pendingPromisesCount--;
 
