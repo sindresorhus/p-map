@@ -258,28 +258,33 @@ export function pMapIterable(
 
 			trySpawn();
 
-			while (promises.length > 0) {
-				const result = await promises[0]; // eslint-disable-line no-await-in-loop
-				const {done, value} = result;
+			try {
+				while (promises.length > 0) {
+					const result = await promises[0]; // eslint-disable-line no-await-in-loop
+					const {done, value} = result;
 
-				promises.shift();
+					promises.shift();
 
-				if (Object.hasOwn(result, 'error')) {
-					throw result.error;
+					if (Object.hasOwn(result, 'error')) {
+						throw result.error;
+					}
+
+					if (done) {
+						return;
+					}
+
+					// Spawn if just dropped below backpressure limit and below the concurrency limit
+					trySpawn();
+
+					if (value === pMapSkip) {
+						continue;
+					}
+
+					yield value;
 				}
-
-				if (done) {
-					return;
-				}
-
-				// Spawn if just dropped below backpressure limit and below the concurrency limit
-				trySpawn();
-
-				if (value === pMapSkip) {
-					continue;
-				}
-
-				yield value;
+			} finally {
+				// Stop pulling input once the consumer stops iterating, otherwise pending skipped mappers keep spawning work.
+				isDone = true;
 			}
 		},
 	};

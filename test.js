@@ -746,3 +746,146 @@ test('pMapIterable - pMapSkip', async t => {
 		2,
 	], async value => value)), [1, 2]);
 });
+
+test('pMapIterable - stops pulling input after the consumer breaks', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	let mapperCalls = 0;
+
+	async function * source() {
+		for (let index = 0; index < 100; index++) {
+			yield index;
+		}
+	}
+
+	const iterator = pMapIterable(source(), async value => {
+		mapperCalls++;
+
+		if (value > 0) {
+			await gate;
+			return pMapSkip;
+		}
+
+		return value;
+	}, {concurrency: 2, backpressure: 2});
+
+	for await (const value of iterator) { // eslint-disable-line no-unreachable-loop
+		t.is(value, 0);
+		break;
+	}
+
+	t.is(mapperCalls, 3);
+
+	release();
+	await delay(50);
+
+	t.is(mapperCalls, 3);
+});
+
+test('pMapIterable - stops pulling input after `return()` is called', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	let mapperCalls = 0;
+
+	const iterator = pMapIterable(Array.from({length: 100}, (_, index) => index), async value => {
+		mapperCalls++;
+
+		if (value > 0) {
+			await gate;
+			return pMapSkip;
+		}
+
+		return value;
+	}, {concurrency: 2, backpressure: 2})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {value: 0, done: false});
+	t.deepEqual(await iterator.return(), {value: undefined, done: true});
+	t.is(mapperCalls, 3);
+
+	release();
+	await delay(50);
+
+	t.is(mapperCalls, 3);
+	t.deepEqual(await iterator.next(), {value: undefined, done: true});
+});
+
+test('pMapIterable - stops pulling input after the consumer throws', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	let mapperCalls = 0;
+
+	async function * source() {
+		for (let index = 0; index < 100; index++) {
+			yield index;
+		}
+	}
+
+	const iterable = pMapIterable(source(), async value => {
+		mapperCalls++;
+
+		if (value > 0) {
+			await gate;
+			return pMapSkip;
+		}
+
+		return value;
+	}, {concurrency: 2, backpressure: 2});
+
+	await t.throwsAsync(async () => {
+		for await (const value of iterable) { // eslint-disable-line no-unreachable-loop
+			throw new Error(`consumer error ${value}`);
+		}
+	}, {message: 'consumer error 0'});
+
+	t.is(mapperCalls, 3);
+
+	release();
+	await delay(50);
+
+	t.is(mapperCalls, 3);
+});
+
+test('pMapIterable - in-flight mappers still settle after the consumer breaks', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	const settled = [];
+
+	async function * source() {
+		for (let index = 0; index < 100; index++) {
+			yield index;
+		}
+	}
+
+	const iterable = pMapIterable(source(), async value => {
+		if (value > 0) {
+			await gate;
+		}
+
+		settled.push(value);
+		return value;
+	}, {concurrency: 3, backpressure: 3});
+
+	for await (const value of iterable) { // eslint-disable-line no-unreachable-loop
+		t.is(value, 0);
+		break;
+	}
+
+	t.deepEqual(settled, [0]);
+
+	release();
+	await delay(50);
+
+	t.deepEqual(settled, [0, 1, 2, 3]);
+});
