@@ -419,6 +419,71 @@ test('catches exception from source iterator - 2nd item after 1st item mapper th
 	t.deepEqual(mappedValues, [0]);
 });
 
+// The iterator throwing after a mapper resolved, with stopOnError false, is distinct because
+// our next() is called from the mapper success path and must not double-decrement the in-flight count
+test('catches exception from source iterator - after a mapper resolved with stopOnError: false', async t => {
+	const input = new ThrowingIterator(6, 3);
+	const mappedValues = [];
+	const error = await t.throwsAsync(pMap(
+		input,
+		async value => {
+			mappedValues.push(value);
+			await delay(50);
+			return value;
+		},
+		{concurrency: 2, stopOnError: false},
+	));
+	t.is(error.message, 'throwing on index 3');
+	t.is(input.index, 4);
+	await delay(200);
+	t.is(input.index, 4);
+	t.deepEqual(mappedValues, [0, 1, 2]);
+});
+
+test('asyncIterator - catches exception from source iterator with stopOnError: false', async t => {
+	let didThrow = false;
+
+	async function * source() {
+		yield 0;
+		yield 1;
+		yield 2;
+		didThrow = true;
+		throw new Error('source failed');
+	}
+
+	const mappedValues = [];
+	const error = await t.throwsAsync(pMap(
+		source(),
+		async value => {
+			mappedValues.push(value);
+			await delay(50);
+			return value;
+		},
+		{concurrency: 2, stopOnError: false},
+	));
+	t.is(error.message, 'source failed');
+	t.true(didThrow);
+	await delay(200);
+	t.deepEqual(mappedValues, [0, 1, 2]);
+});
+
+test('aggregates rejected input elements when stopOnError is false', async t => {
+	const input = [
+		Promise.reject(new Error('input 0')),
+		1,
+		Promise.reject(new Error('input 2')),
+		3,
+	];
+	const mappedValues = [];
+	const error = await t.throwsAsync(pMap(input, async value => {
+		mappedValues.push(value);
+		await delay(10);
+		return value;
+	}, {concurrency: 2, stopOnError: false}), {instanceOf: AggregateError});
+	t.deepEqual(error.errors.map(error => error.message), ['input 0', 'input 2']);
+	t.deepEqual(mappedValues, [1, 3]);
+});
+
 test('asyncIterator - get the correct exception after stop-on-error', async t => {
 	const input = [1, async () => delay(200, {value: 2}), async () => delay(300, {value: 3})];
 	const mappedValues = [];
