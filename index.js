@@ -28,7 +28,7 @@ export default async function pMap(
 		let isIterableDone = false;
 		let resolvingCount = 0;
 		let currentIndex = 0;
-		const iterator = iterable[Symbol.iterator] === undefined ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
+		const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
 		const signalListener = () => {
 			reject(signal.reason);

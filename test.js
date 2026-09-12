@@ -515,6 +515,21 @@ test('incorrect input type', async t => {
 	t.false(mapperCalled);
 });
 
+test('prefers the async iterator when the input has both, like `for await`', async t => {
+	const input = {
+		[Symbol.iterator]() {
+			throw new Error('sync iteration is not supported');
+		},
+		async * [Symbol.asyncIterator]() {
+			yield 1;
+			yield 2;
+		},
+	};
+
+	t.deepEqual(await pMap(input, value => value * 10), [10, 20]);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(input, value => value * 10)), [10, 20]);
+});
+
 test('no unhandled rejected promises from mapper throws - infinite concurrency', async t => {
 	const input = [1, 2, 3];
 	const mappedValues = [];
