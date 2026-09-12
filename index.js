@@ -44,10 +44,18 @@ export default async function pMap(
 		};
 
 		const reject = reason => {
+			if (isResolved) {
+				return;
+			}
+
 			isRejected = true;
 			isResolved = true;
 			reject_(reason);
 			cleanup();
+
+			if (!isIterableDone) {
+				closeIterator(iterator);
+			}
 		};
 
 		if (signal) {
@@ -285,16 +293,18 @@ export function pMapIterable(
 				// Stop pulling input once the consumer stops iterating, otherwise pending skipped mappers keep spawning work.
 				isDone = true;
 
-				// Close the source so it can release its resources, like `for await` does.
-				// Not awaited so a source that is blocked in `next()` cannot block the consumer from stopping.
-				(async () => {
-					try {
-						await iterator.return?.();
-					} catch {}
-				})();
+				closeIterator(iterator);
 			}
 		},
 	};
 }
 
 export const pMapSkip = Symbol('skip');
+
+// Close the source so it can release its resources, like `for await` does.
+// Callers must not await this so a source that is blocked in `next()` cannot block them.
+async function closeIterator(iterator) {
+	try {
+		await iterator.return?.();
+	} catch {}
+}
