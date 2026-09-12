@@ -72,7 +72,8 @@ export default async function pMap(
 				return;
 			}
 
-			const nextItem = await iterator.next();
+			// Once the source reported `done`, don't pull again like `for await`. A source like a queue may block in `next()` after it is exhausted, which would hang the completion below.
+			const nextItem = isIterableDone ? {done: true} : await iterator.next();
 
 			const index = currentIndex;
 			currentIndex++;

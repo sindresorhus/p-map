@@ -1392,3 +1392,50 @@ test('pMapIterable - does not call `return()` on an exhausted source iterator', 
 	t.deepEqual(await collectAsyncIterable(pMapIterable(iterable, async value => value, {concurrency: 2})), [0, 1, 2]);
 	t.is(returnCallCount, 0);
 });
+
+// A source like a queue may block in `next()` after reporting `done`, so pulling again would hang. `for await` never pulls after `done`.
+function exhaustibleSource(count) {
+	let index = 0;
+	let isExhausted = false;
+
+	return {
+		nextCallsAfterDone: 0,
+		[Symbol.asyncIterator]() {
+			return {
+				next: async () => {
+					if (isExhausted) {
+						this.nextCallsAfterDone++;
+						return {done: true, value: undefined};
+					}
+
+					if (index < count) {
+						return {done: false, value: index++};
+					}
+
+					isExhausted = true;
+					return {done: true, value: undefined};
+				},
+			};
+		},
+	};
+}
+
+test('does not call `next()` on an exhausted source iterator', async t => {
+	const source = exhaustibleSource(3);
+
+	t.deepEqual(await pMap(source, async value => {
+		await delay(10);
+		return value;
+	}, {concurrency: 2}), [0, 1, 2]);
+	t.is(source.nextCallsAfterDone, 0);
+});
+
+test('asyncIterator - does not call `next()` on an exhausted source iterator with stopOnError: false', async t => {
+	const source = exhaustibleSource(3);
+
+	await t.throwsAsync(pMap(source, async value => {
+		await delay(10);
+		throw new Error(`mapper error ${value}`);
+	}, {concurrency: 2, stopOnError: false}), {instanceOf: AggregateError});
+	t.is(source.nextCallsAfterDone, 0);
+});
