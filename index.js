@@ -218,7 +218,8 @@ export function pMapIterable(
 			let index = 0;
 
 			function trySpawn() {
-				if (isDone || !(pendingPromisesCount < concurrency && promises.length < backpressure)) {
+				// Don't pull again once the source reported `done`, like `for await`. A source like a queue may block in `next()` after it is exhausted.
+				if (isDone || isIterableDone || !(pendingPromisesCount < concurrency && promises.length < backpressure)) {
 					return;
 				}
 

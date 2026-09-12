@@ -1439,3 +1439,50 @@ test('asyncIterator - does not call `next()` on an exhausted source iterator wit
 	}, {concurrency: 2, stopOnError: false}), {instanceOf: AggregateError});
 	t.is(source.nextCallsAfterDone, 0);
 });
+
+test('pMapIterable - does not call `next()` on an exhausted source iterator', async t => {
+	const source = exhaustibleSource(3);
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(source, async value => {
+		await delay(10);
+		return value;
+	}, {concurrency: 2, backpressure: 4})), [0, 1, 2]);
+	await delay(10);
+	t.is(source.nextCallsAfterDone, 0);
+});
+
+test('does not call `next()` on an exhausted sync source iterator', async t => {
+	let nextCallsAfterDone = 0;
+
+	const source = {
+		[Symbol.iterator]() {
+			let index = 0;
+			return {
+				next() {
+					if (index > 3) {
+						nextCallsAfterDone++;
+					}
+
+					return {done: index === 3, value: index++};
+				},
+			};
+		},
+	};
+
+	t.deepEqual(await pMap(source, async value => {
+		await delay(10);
+		return value;
+	}), [0, 1, 2]);
+	t.is(nextCallsAfterDone, 0);
+});
+
+test('pMapIterable - does not call `next()` on an exhausted source iterator when mappers skip', async t => {
+	const source = exhaustibleSource(4);
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(source, async value => {
+		await delay(10);
+		return value % 2 === 0 ? pMapSkip : value;
+	}, {concurrency: 2, backpressure: 4})), [1, 3]);
+	await delay(10);
+	t.is(source.nextCallsAfterDone, 0);
+});
