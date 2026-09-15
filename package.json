@@ -17,7 +17,7 @@
 	},
 	"sideEffects": false,
 	"engines": {
-		"node": ">=18"
+		"node": ">=20.17"
 	},
 	"scripts": {
 		"test": "xo && ava && tsd"
@@ -52,6 +52,6 @@
 		"random-int": "^3.0.0",
 		"time-span": "^5.1.0",
 		"tsd": "^0.29.0",
-		"xo": "^0.56.0"
+		"xo": "^1.2.3"
 	}
 }

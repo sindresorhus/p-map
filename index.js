@@ -7,7 +7,7 @@ export default async function pMap(
 		signal,
 	} = {},
 ) {
-	return new Promise((resolve_, reject_) => {
+	return new Promise((_resolve, _reject) => {
 		if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
 			throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
 		}
@@ -39,7 +39,7 @@ export default async function pMap(
 		};
 
 		const resolve = value => {
-			resolve_(value);
+			_resolve(value);
 			cleanup();
 		};
 
@@ -50,7 +50,7 @@ export default async function pMap(
 
 			isRejected = true;
 			isResolved = true;
-			reject_(reason);
+			_reject(reason);
 			cleanup();
 
 			if (!isIterableDone) {
