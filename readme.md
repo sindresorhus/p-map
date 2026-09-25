@@ -80,6 +80,9 @@ Minimum: `1`
 
 Number of concurrently pending promises returned by `mapper`.
 
+> [!NOTE]
+> `pMap` can drop items that pulls from `input` already had in flight: when it stops early, because a mapper throws or the `signal` aborts, and, with `concurrency` above 1, when one pull reports `done` while another still gets an item. That is invisible for a re-readable input, like an array or a string, but a source that cannot be re-read, such as a queue, loses those items. With `concurrency: 1`, only an abort can drop an item.
+
 ##### backpressure
 
 **Only for `pMapIterable`**
@@ -132,6 +135,9 @@ const mapper = async value => value;
 await pMap([delay(1000), delay(1000)], mapper, {signal: abortController.signal});
 // Throws AbortError (DOMException) after 500 ms.
 ```
+
+> [!NOTE]
+> An abort that comes from a timer or an I/O callback, like a `setTimeout`, cannot take effect while `pMap` is inside a stretch of work that never waits on a timer or I/O. Draining a large input with mappers that just return a value is one such stretch, and there the run finishes first. This is the same for `Promise.all` and for a plain loop, and it goes away as soon as the mapper or the source waits on a timer or I/O.
 
 ### pMapSkip
 

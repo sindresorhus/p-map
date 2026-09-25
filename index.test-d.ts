@@ -1,4 +1,4 @@
-import {expectType, expectAssignable} from 'tsd';
+import {expectType, expectAssignable, expectError} from 'tsd';
 import pMap, {pMapIterable, type Options, type Mapper, pMapSkip} from './index.js';
 
 const sites = [
@@ -80,3 +80,61 @@ expectType<AsyncIterable<string>>(pMapIterable(sites, asyncMapper));
 expectType<AsyncIterable<string>>(pMapIterable(sitesWithPromises, asyncMapper));
 expectType<AsyncIterable<string>>(pMapIterable(sitesAsyncIterable, asyncMapper));
 expectType<AsyncIterable<string>>(pMapIterable(sitesAsyncIterableWithPromises, asyncMapper));
+
+// A readonly tuple input keeps the literal types.
+expectType<Promise<Array<'a' | 'b'>>>(pMap(['a', 'b'] as const, async (site: 'a' | 'b') => site));
+
+// A Set input.
+expectType<Promise<number[]>>(pMap(new Set([1, 2]), async (value: number) => value * 2));
+
+// A Map input, destructured in the mapper.
+expectType<Promise<string[]>>(pMap(new Map([['a', 1]]), async ([key, value]: [string, number]) => `${key}${value}`));
+
+// An async iterable that yields promises.
+expectType<Promise<number[]>>(pMap(sitesAsyncIterableWithPromises, async (site: string) => site.length));
+
+// A mapper that always returns pMapSkip.
+expectType<Promise<string[]>>(pMap(sites, async site => (site.length > 0 ? pMapSkip : site)));
+
+// `backpressure` is pMapIterable only.
+expectError(pMap(sites, asyncMapper, {backpressure: 2}));
+
+// `stopOnError` and `signal` are pMap only.
+expectError(pMapIterable(sites, asyncMapper, {stopOnError: false}));
+expectError(pMapIterable(sites, asyncMapper, {signal: new AbortController().signal}));
+
+// A mapper returning nothing.
+const voidMapper = async (number: number) => {
+	await Promise.resolve();
+};
+
+expectType<Promise<void[]>>(pMap(numbers, voidMapper));
+
+// A mapper that returns a promise of a skip.
+expectType<Promise<string[]>>(pMap(sites, async site => (site.length > 3 ? pMapSkip : site)));
+
+// An input that is already async iterable, not promise yielding.
+const asyncNumbers: AsyncIterable<number> = {
+	async * [Symbol.asyncIterator]() {
+		yield 1;
+	},
+};
+expectType<Promise<string[]>>(pMap(asyncNumbers, async number => `${number}`));
+
+// A readonly array input.
+const readonlyNumbers: readonly number[] = [1, 2];
+expectType<Promise<number[]>>(pMap(readonlyNumbers, async number => number));
+
+// Options with an unknown key are rejected.
+expectError(pMap(sites, asyncMapper, {concurrency: 2, nope: true}));
+expectError(pMapIterable(sites, asyncMapper, {backpressure: 2, nope: true}));
+
+// `concurrency` must be a number, not a numeric string.
+expectError(pMap(sites, asyncMapper, {concurrency: '2'}));
+
+// A mapper that does not accept the element type.
+expectError(pMap(numbers, async (site: string) => site));
+
+// `pMapIterable` infers the same way.
+expectType<AsyncIterable<void>>(pMapIterable(numbers, voidMapper));
+expectType<AsyncIterable<string>>(pMapIterable(asyncNumbers, async number => `${number}`));

@@ -24,6 +24,8 @@ export type Options = BaseOptions & {
 	/**
 	You can abort the promises using [`AbortController`](https://developer.mozilla.org/en-US/docs/Web/API/AbortController).
 
+	Aborting is delivered like any other timer, so it cannot take effect while `pMap` is inside a stretch of work that never waits on anything, such as draining a large input with mappers that just return a value. That is the same for `Promise.all` and for a plain loop.
+
 	@example
 	```
 	import pMap from 'p-map';
