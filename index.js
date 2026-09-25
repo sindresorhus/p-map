@@ -21,12 +21,13 @@ export default async function pMap(
 		}
 
 		const result = [];
+		// Stage the errors by index, like `result`, so they are reported in input order.
 		const errors = [];
 		const skippedIndexesMap = new Map();
-		let isRejected = false;
 		let isResolved = false;
 		let isIterableDone = false;
-		let resolvingCount = 0;
+		const pendingIndexes = new Set();
+		let doneIndex = Number.POSITIVE_INFINITY;
 		let currentIndex = 0;
 		const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
@@ -48,7 +49,6 @@ export default async function pMap(
 				return;
 			}
 
-			isRejected = true;
 			isResolved = true;
 			reject_(reason);
 			cleanup();
@@ -67,85 +67,140 @@ export default async function pMap(
 			signal.addEventListener('abort', signalListener, {once: true});
 		}
 
+		// Serialize the pulls like `for await` does so every element keeps its input position
+		// even when a source resolves its `next()` calls out of call order.
+		const pull = createPuller(iterator, () => isIterableDone || isResolved);
+
+		// Settle only once the source is done and every earlier pull and mapper has finished. A pull
+		// before `done` can still produce an element, while pulls after it do not affect the result.
+		const settleIfFinished = () => {
+			if (isResolved || !isIterableDone) {
+				return;
+			}
+
+			for (const index of pendingIndexes) {
+				if (index < doneIndex) {
+					return;
+				}
+			}
+
+			if (!stopOnError) {
+				const collectedErrors = [];
+
+				for (let index = 0; index < Math.min(doneIndex, errors.length); index++) {
+					if (index in errors) {
+						collectedErrors.push(errors[index]);
+					}
+				}
+
+				if (collectedErrors.length > 0) {
+					reject(new AggregateError(collectedErrors)); // eslint-disable-line unicorn/error-message
+					return;
+				}
+			}
+
+			isResolved = true;
+
+			// `done` is final, like `for await`, so a `done` that lands between two elements ends
+			// the result there and everything the source produced past it is dropped.
+			const lastIndex = Math.min(doneIndex, result.length);
+
+			// Every index below `lastIndex` has a value: an index only goes unassigned when the pull
+			// below it reported `done`, and that is at `doneIndex` itself. So the array is dense and
+			// can be handed over as is unless there is a `pMapSkip` to drop.
+			if (lastIndex === result.length && skippedIndexesMap.size === 0) {
+				resolve(result);
+				return;
+			}
+
+			const pureResult = [];
+
+			for (let index = 0; index < lastIndex; index++) {
+				// Support multiple `pMapSkip`'s.
+				if (skippedIndexesMap.get(index) === pMapSkip) {
+					continue;
+				}
+
+				pureResult.push(result[index]);
+			}
+
+			resolve(pureResult);
+		};
+
 		const next = async () => {
 			if (isResolved) {
 				return;
 			}
 
-			// Once the source reported `done`, don't pull again like `for await`. A source like a queue may block in `next()` after it is exhausted, which would hang the completion below.
-			const nextItem = isIterableDone ? {done: true} : await iterator.next();
+			// Take the index when the pull starts, not when it resolves, so a source that settles
+			// its `next()` calls out of call order still gets the right position.
+			const index = currentIndex++;
+			pendingIndexes.add(index);
 
-			const index = currentIndex;
-			currentIndex++;
+			let nextItem;
+			try {
+				nextItem = await pull();
+			} catch (error) {
+				pendingIndexes.delete(index);
 
-			// Note: `iterator.next()` can be called many times in parallel.
-			// This can cause multiple calls to this `next()` function to
-			// receive a `nextItem` with `done === true`.
-			// The shutdown logic that rejects/resolves must be protected
-			// so it runs only one time as the `skippedIndex` logic is
-			// non-idempotent.
-			if (nextItem.done) {
-				isIterableDone = true;
-
-				if (resolvingCount === 0 && !isResolved) {
-					if (!stopOnError && errors.length > 0) {
-						reject(new AggregateError(errors)); // eslint-disable-line unicorn/error-message
-						return;
-					}
-
-					isResolved = true;
-
-					if (skippedIndexesMap.size === 0) {
-						resolve(result);
-						return;
-					}
-
-					const pureResult = [];
-
-					// Support multiple `pMapSkip`'s.
-					for (const [index, value] of result.entries()) {
-						if (skippedIndexesMap.get(index) === pMapSkip) {
-							continue;
-						}
-
-						pureResult.push(value);
-					}
-
-					resolve(pureResult);
+				if (index < doneIndex) {
+					throw error;
 				}
 
+				settleIfFinished();
 				return;
 			}
 
-			resolvingCount++;
+			if (nextItem.done) {
+				pendingIndexes.delete(index);
+				doneIndex = Math.min(doneIndex, index);
+				isIterableDone = true;
+				settleIfFinished();
+				return;
+			}
+
+			if (index >= doneIndex) {
+				pendingIndexes.delete(index);
+				settleIfFinished();
+				return;
+			}
 
 			// Intentionally detached
 			(async () => {
 				try {
 					const element = await nextItem.value;
 
-					if (isResolved) {
+					if (isResolved || index >= doneIndex) {
 						return;
 					}
 
 					const value = await mapper(element, index);
 
 					// Use Map to stage the index of the element.
+					if (index >= doneIndex) {
+						return;
+					}
+
 					if (value === pMapSkip) {
 						skippedIndexesMap.set(index, value);
 					}
 
 					result[index] = value;
 				} catch (error) {
+					if (index >= doneIndex) {
+						return;
+					}
+
 					if (stopOnError) {
 						reject(error);
 						return;
 					}
 
-					errors.push(error);
+					errors[index] = error;
+				} finally {
+					pendingIndexes.delete(index);
+					settleIfFinished();
 				}
-
-				resolvingCount--;
 
 				// If the iterable throws we can't really continue regardless of `stopOnError` state
 				// since an iterable is likely to continue throwing after it throws once.
@@ -175,7 +230,7 @@ export default async function pMap(
 					break;
 				}
 
-				if (isIterableDone || isRejected) {
+				if (isIterableDone || isResolved) {
 					break;
 				}
 			}
@@ -217,9 +272,12 @@ export function pMapIterable(
 			let isIterableDone = false;
 			let index = 0;
 
+			// Serialize the pulls like `for await` does so every element keeps its input position
+			// even when a source resolves its `next()` calls out of call order.
+			const pull = createPuller(iterator, () => isDone || isIterableDone);
+
 			function trySpawn() {
-				// Don't pull again once the source reported `done`, like `for await`. A source like a queue may block in `next()` after it is exhausted.
-				if (isDone || isIterableDone || !(pendingPromisesCount < concurrency && promises.length < backpressure)) {
+				if (!(pendingPromisesCount < concurrency && promises.length < backpressure)) {
 					return;
 				}
 
@@ -229,7 +287,10 @@ export function pMapIterable(
 				// the consumer abandons after an earlier error becomes an unhandled rejection.
 				const promise = (async () => {
 					try {
-						const {done, value} = await iterator.next();
+						// Take the index when the pull starts, not when it resolves, so a source that
+						// settles its `next()` calls out of call order still gets the right position.
+						const currentIndex = index++;
+						const {done, value} = await pull();
 
 						if (done) {
 							isIterableDone = true;
@@ -240,7 +301,6 @@ export function pMapIterable(
 						// Spawn if still below concurrency and backpressure limit
 						trySpawn();
 
-						const currentIndex = index++;
 						const element = await value;
 
 						// The consumer stopped iterating or a mapper threw while this input was pending, so drop it instead of doing work nobody will consume.
@@ -321,4 +381,47 @@ async function closeIterator(iterator) {
 	try {
 		await iterator.return?.();
 	} catch {}
+}
+
+// Pull the next item, in call order, so every element keeps its input position even when a
+// source resolves its `next()` calls out of call order. Pulls are still issued as soon as they
+// are requested, so a slow source is not stalled. Once `isStopped()` reports true we never pull
+// again: a source like a queue may block in `next()` after it is exhausted, which would hang
+// the caller.
+function createPuller(iterator, isStopped) {
+	const pendingPulls = new Map();
+	let pulledCount = 0;
+	let pullIndex = 0;
+	let isSourceDone = false;
+
+	return () => {
+		if (isSourceDone || isStopped()) {
+			return {done: true};
+		}
+
+		const result = iterator.next();
+
+		// `done` is final, like `for await`, so anything the source produces after it is dropped.
+		// A sync iterable, like an array, answers right away so it can be seen here. An async
+		// iterable is seen below, as soon as its pull settles.
+		const markDone = item => {
+			if (item?.done) {
+				isSourceDone = true;
+			}
+		};
+
+		markDone(result);
+
+		const pull = Promise.resolve(result);
+
+		// A pull is only awaited once every pull before it has settled, so it can reject before
+		// anyone is listening for it. This also marks `done` as soon as the pull settles.
+		pull.then(markDone, () => {});
+		pendingPulls.set(pulledCount++, pull);
+
+		const index = pullIndex++;
+		const nextItem = pendingPulls.get(index);
+		pendingPulls.delete(index);
+		return nextItem;
+	};
 }

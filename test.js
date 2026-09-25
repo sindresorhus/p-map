@@ -174,6 +174,107 @@ test('aggregate errors when stopOnError is false', async t => {
 	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: ''});
 });
 
+// A source whose `next()` calls settle out of call order, unlike a generator, which queues
+// them. `for await` still sees every item in call order, so `pMap` must too.
+function outOfOrderSource(items, delays) {
+	let callIndex = 0;
+
+	return {
+		[Symbol.asyncIterator]() {
+			return {
+				async next() {
+					const index = callIndex++;
+
+					if (index >= items.length) {
+						return {done: true};
+					}
+
+					await delay(delays[index % delays.length]);
+					return {done: false, value: items[index]};
+				},
+			};
+		},
+	};
+}
+
+test('pMap - a source whose `next()` settles out of order keeps input order', async t => {
+	const source = outOfOrderSource(['a', 'b', 'c', 'd'], [50, 0, 0, 0]);
+	t.deepEqual(await pMap(source, (value, index) => `${value}${index}`, {concurrency: 4}), ['a0', 'b1', 'c2', 'd3']);
+});
+
+test('pMap - a source whose `next()` settles out of order keeps input order with concurrency 2', async t => {
+	const source = outOfOrderSource(['a', 'b', 'c', 'd'], [50, 10, 0, 0]);
+	t.deepEqual(await pMap(source, (value, index) => `${value}${index}`, {concurrency: 2}), ['a0', 'b1', 'c2', 'd3']);
+});
+
+test('pMap - a source that resolves `done` before an earlier item does not drop that item', async t => {
+	const source = outOfOrderSource(['a', 'b', 'c'], [50, 0, 0]);
+	t.deepEqual(await pMap(source, value => value, {concurrency: 3}), ['a', 'b', 'c']);
+});
+
+// A source that reports `done` and then keeps producing is broken, but `pMap` and `pMapIterable`
+// still have to treat the `done` as the end of the input, like `for await` does. The first element
+// arrives late, so its mapper finishes before the `done` is observed and the pull after it is
+// already in flight.
+function doneThenMoreSource() {
+	let callIndex = 0;
+
+	return {
+		[Symbol.asyncIterator]() {
+			return {
+				async next() {
+					const index = callIndex++;
+
+					if (index === 1) {
+						return {done: true};
+					}
+
+					await delay(index === 0 ? 20 : 0);
+					return {done: false, value: `v${index}`};
+				},
+			};
+		},
+	};
+}
+
+test('pMap - a source that reports `done` and then keeps producing stops at the `done`', async t => {
+	const result = await pMap(doneThenMoreSource(), (value, index) => `${value}@${index}`, {concurrency: 3});
+	t.deepEqual(result, ['v0@0']);
+	// A hole would make these two disagree. A hole turns into `null` under `JSON.stringify` and
+	// `undefined` under `Array.from`, which is a nasty thing to pass on to a caller.
+	t.is(result.length, Object.keys(result).length);
+});
+
+test('pMap and pMapIterable agree on a source that reports `done` and then keeps producing', async t => {
+	const collected = [];
+	for await (const value of pMapIterable(doneThenMoreSource(), (value, index) => `${value}@${index}`, {concurrency: 3})) {
+		collected.push(value);
+	}
+
+	t.deepEqual(await pMap(doneThenMoreSource(), (value, index) => `${value}@${index}`, {concurrency: 3}), collected);
+});
+
+// The order the mappers happen to finish in is not stable from run to run, so the errors are
+// reported in input order instead. Otherwise `error.errors[0]` is a different error on every run.
+test('stopOnError: false reports the errors in input order', async t => {
+	const input = [0, 1, 2, 3, 4];
+	// Finish in the exact reverse of input order.
+	const delays = [40, 30, 20, 10, 0];
+	const orders = new Set();
+
+	for (let run = 0; run < 3; run++) {
+		// eslint-disable-next-line no-await-in-loop
+		const error = await t.throwsAsync(pMap(input, async value => {
+			await delay(delays[value]);
+			throw new Error(`boom ${value}`);
+		}, {concurrency: 5, stopOnError: false}), {instanceOf: AggregateError});
+
+		orders.add(error.errors.map(error => error.message).join(','));
+	}
+
+	t.deepEqual([...orders], ['boom 0,boom 1,boom 2,boom 3,boom 4']);
+});
+
 test('pMapSkip', async t => {
 	t.deepEqual(await pMap([
 		1,
@@ -817,6 +918,11 @@ test('pMapIterable - async input, backpressure > concurrency', async t => {
 	}, {concurrency: 1, backpressure: 2}));
 
 	t.deepEqual(log, [1, 1, 2, 2, 3, 3]);
+});
+
+test('pMapIterable - a source whose `next()` settles out of order keeps input order', async t => {
+	const source = outOfOrderSource(['a', 'b', 'c', 'd'], [50, 5, 40, 5]);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(source, (value, index) => `${value}${index}`, {concurrency: 4})), ['a0', 'b1', 'c2', 'd3']);
 });
 
 test('pMapIterable - pMapSkip', async t => {
