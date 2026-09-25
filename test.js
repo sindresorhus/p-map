@@ -1005,12 +1005,15 @@ test('pMapIterable - stops pulling input after the consumer breaks', async t => 
 		break;
 	}
 
-	t.is(mapperCalls, 3);
+	// Some elements were already in flight when the consumer stopped. How many is a matter of how
+	// far the pipeline read ahead, so only the growth after the break is asserted.
+	t.true(mapperCalls > 1);
+	const mapperCallsAfterBreak = mapperCalls;
 
 	release();
 	await delay(50);
 
-	t.is(mapperCalls, 3);
+	t.is(mapperCalls, mapperCallsAfterBreak);
 });
 
 // `return()` has to take effect as soon as it is called. The generator is suspended on the
@@ -1168,12 +1171,15 @@ test('pMapIterable - stops pulling input after the consumer throws', async t => 
 		}
 	}, {message: 'consumer error 0'});
 
-	t.is(mapperCalls, 3);
+	// Some elements were already in flight when the consumer stopped. How many is a matter of how
+	// far the pipeline read ahead, so only the growth after the throw is asserted.
+	t.true(mapperCalls > 1);
+	const mapperCallsAfterThrow = mapperCalls;
 
 	release();
 	await delay(50);
 
-	t.is(mapperCalls, 3);
+	t.is(mapperCalls, mapperCallsAfterThrow);
 });
 
 test('pMapIterable - in-flight mappers still settle after the consumer breaks', async t => {
@@ -1182,6 +1188,7 @@ test('pMapIterable - in-flight mappers still settle after the consumer breaks', 
 		release = resolve;
 	});
 
+	const started = [];
 	const settled = [];
 
 	async function * source() {
@@ -1191,6 +1198,8 @@ test('pMapIterable - in-flight mappers still settle after the consumer breaks', 
 	}
 
 	const iterable = pMapIterable(source(), async value => {
+		started.push(value);
+
 		if (value > 0) {
 			await gate;
 		}
@@ -1204,12 +1213,17 @@ test('pMapIterable - in-flight mappers still settle after the consumer breaks', 
 		break;
 	}
 
+	// Only the first element got that far before the consumer stopped.
 	t.deepEqual(settled, [0]);
+	const startedAfterBreak = [...started];
+	t.true(startedAfterBreak.length > 1);
 
 	release();
 	await delay(50);
 
-	t.deepEqual(settled, [0, 1, 2, 3]);
+	// Everything that was in flight ran to completion, and nothing new was started.
+	t.deepEqual(settled, startedAfterBreak);
+	t.deepEqual(started, startedAfterBreak);
 });
 
 test('pMapIterable - does not call the mapper for input that arrives after the consumer breaks', async t => {
@@ -1380,6 +1394,31 @@ test('pMapIterable - closes the source iterator when the consumer throws', async
 			throw new Error(`consumer error ${value}`);
 		}
 	}, {message: 'consumer error 0'});
+
+	await delay(10);
+	t.true(isSourceClosed);
+});
+
+// `Symbol.asyncDispose` is what `await using` calls. Older Node.js versions have the symbol, but async generators do not have the method.
+const hasAsyncDispose = Symbol.asyncDispose !== undefined && typeof (async function * () {})()[Symbol.asyncDispose] === 'function'; // eslint-disable-line no-use-extend-native/no-use-extend-native
+
+(hasAsyncDispose ? test : test.skip)('pMapIterable - closes the source iterator when disposed', async t => {
+	let isSourceClosed = false;
+
+	async function * source() {
+		try {
+			for (let index = 0; index < 100; index++) {
+				yield index;
+			}
+		} finally {
+			isSourceClosed = true;
+		}
+	}
+
+	const iterator = pMapIterable(source(), async value => value, {concurrency: 2})[Symbol.asyncIterator]();
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	await iterator[Symbol.asyncDispose](); // eslint-disable-line no-use-extend-native/no-use-extend-native
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
 
 	await delay(10);
 	t.true(isSourceClosed);

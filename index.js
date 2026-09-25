@@ -67,9 +67,7 @@ export default async function pMap(
 			signal.addEventListener('abort', signalListener, {once: true});
 		}
 
-		// Serialize the pulls like `for await` does so every element keeps its input position
-		// even when a source resolves its `next()` calls out of call order.
-		const pull = createPuller(iterator, () => isIterableDone || isResolved);
+		const pull = createPuller(iterator);
 
 		// Settle only once the source is done and every earlier pull and mapper has finished. A pull
 		// before `done` can still produce an element, while pulls after it do not affect the result.
@@ -278,9 +276,7 @@ export function pMapIterable(
 				let isIterableDone = false;
 				let index = 0;
 
-				// Serialize the pulls like `for await` does so every element keeps its input position
-				// even when a source resolves its `next()` calls out of call order.
-				const pull = createPuller(iterator, () => isDone || isIterableDone);
+				const pull = createPuller(iterator);
 
 				function trySpawn() {
 					// Do not spawn once the consumer is gone. The pull would be wasted work, and for a
@@ -322,10 +318,13 @@ export function pMapIterable(
 							pendingPromisesCount--;
 
 							if (returnValue === pMapSkip) {
-								const index = promises.indexOf(promise);
+								// Position 0 is left alone: the consumer may be awaiting it right now, so
+								// splicing it would make the consumer shift the wrong promise. It handles
+								// the `pMapSkip` itself.
+								const position = promises.indexOf(promise);
 
-								if (index > 0) {
-									promises.splice(index, 1);
+								if (position > 0) {
+									promises.splice(position, 1);
 								}
 							}
 
@@ -379,24 +378,23 @@ export function pMapIterable(
 				}
 			})();
 
-			return {
-				async next() {
-					return generator.next();
-				},
-				async return(value) {
-					isDone = true;
-					return generator.return(value);
-				},
-				async throw(error) {
-					isDone = true;
-					return generator.throw(error);
-				},
-				// Not `async`: `for await` takes the result of this call as the iterator itself, so
-				// returning a promise here would leave it looking for `next()` on a promise.
-				[Symbol.asyncIterator]() {
-					return this;
-				},
+			// Override `return()` and `throw()` on the generator itself instead of wrapping it, so it
+			// keeps what it inherits, like `Symbol.asyncDispose` for `await using`, and `next()` stays
+			// the native one. Plain functions, not `async`: the generator already returns a promise,
+			// and an `async` function would wrap it in two more promises and two more microtask hops.
+			const {return: generatorReturn, throw: generatorThrow} = generator;
+
+			generator.return = value => {
+				isDone = true;
+				return generatorReturn.call(generator, value);
 			};
+
+			generator.throw = error => {
+				isDone = true;
+				return generatorThrow.call(generator, error);
+			};
+
+			return generator;
 		},
 	};
 }
@@ -411,45 +409,41 @@ async function closeIterator(iterator) {
 	} catch {}
 }
 
-// Pull the next item, in call order, so every element keeps its input position even when a
-// source resolves its `next()` calls out of call order. Pulls are still issued as soon as they
-// are requested, so a slow source is not stalled. Once `isStopped()` reports true we never pull
-// again: a source like a queue may block in `next()` after it is exhausted, which would hang
-// the caller.
-function createPuller(iterator, isStopped) {
-	const pendingPulls = new Map();
-	let pulledCount = 0;
-	let pullIndex = 0;
+// Pull the next item, and stop pulling once the source has reported `done`: a source like a queue
+// may block in `next()` after it is exhausted, which would hang the caller. `done` is final, like
+// `for await`, so anything the source produces after it is dropped.
+function createPuller(iterator) {
 	let isSourceDone = false;
 
+	// A sync iterable, like an array, answers right away, so `done` can be seen here. An async
+	// iterable is seen in the `then` below, as soon as its pull settles.
+	const markDone = item => {
+		if (item?.done) {
+			isSourceDone = true;
+		}
+	};
+
 	return () => {
-		if (isSourceDone || isStopped()) {
+		if (isSourceDone) {
 			return {done: true};
 		}
 
 		const result = iterator.next();
-
-		// `done` is final, like `for await`, so anything the source produces after it is dropped.
-		// A sync iterable, like an array, answers right away so it can be seen here. An async
-		// iterable is seen below, as soon as its pull settles.
-		const markDone = item => {
-			if (item?.done) {
-				isSourceDone = true;
-			}
-		};
-
 		markDone(result);
 
-		const pull = Promise.resolve(result);
+		// A sync iterable, like an array, answers right away, so `done` has been read already and
+		// the result can go back untouched.
+		if (typeof result?.then !== 'function') {
+			return result;
+		}
 
-		// A pull is only awaited once every pull before it has settled, so it can reject before
-		// anyone is listening for it. This also marks `done` as soon as the pull settles.
-		pull.then(markDone, () => {});
-		pendingPulls.set(pulledCount++, pull);
+		// An async iterable settles later, so `done` is read off the pull once it does. That is a
+		// branch of its own, which leaves the caller awaiting the pull itself rather than a promise
+		// derived from it, so an async source does not pay an extra microtask per element. The
+		// rejection is handled here as well as by the caller, so a pull cannot escape as an
+		// unhandled rejection.
+		result.then(markDone, () => {});
 
-		const index = pullIndex++;
-		const nextItem = pendingPulls.get(index);
-		pendingPulls.delete(index);
-		return nextItem;
+		return result;
 	};
 }
