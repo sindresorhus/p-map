@@ -8,7 +8,9 @@ export default async function pMap(
 	} = {},
 ) {
 	return new Promise((resolve_, reject_) => {
-		if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
+		// Optional chaining, so a nullish input gets this message rather than Node's internal
+		// "null is not iterable".
+		if (iterable?.[Symbol.iterator] === undefined && iterable?.[Symbol.asyncIterator] === undefined) {
 			throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
 		}
 
@@ -244,7 +246,9 @@ export function pMapIterable(
 		backpressure = concurrency,
 	} = {},
 ) {
-	if (iterable[Symbol.iterator] === undefined && iterable[Symbol.asyncIterator] === undefined) {
+	// Optional chaining, so a nullish input gets this message rather than Node's internal
+	// "null is not iterable".
+	if (iterable?.[Symbol.iterator] === undefined && iterable?.[Symbol.asyncIterator] === undefined) {
 		throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
 	}
 

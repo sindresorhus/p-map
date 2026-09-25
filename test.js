@@ -616,6 +616,18 @@ test('incorrect input type', async t => {
 	t.false(mapperCalled);
 });
 
+// A nullish input is the most likely mistake, so it has to reach the same message as any other
+// wrong input rather than Node's internal "null is not iterable".
+test('incorrect input type: nullish', async t => {
+	await t.throwsAsync(pMap(null, async () => {}), {message: 'Expected `input` to be either an `Iterable` or `AsyncIterable`, got (object)'});
+	await t.throwsAsync(pMap(undefined, async () => {}), {message: 'Expected `input` to be either an `Iterable` or `AsyncIterable`, got (undefined)'});
+});
+
+test('pMapIterable - incorrect input type: nullish', t => {
+	t.throws(() => pMapIterable(null, async () => {}), {message: 'Expected `input` to be either an `Iterable` or `AsyncIterable`, got (object)'});
+	t.throws(() => pMapIterable(undefined, async () => {}), {message: 'Expected `input` to be either an `Iterable` or `AsyncIterable`, got (undefined)'});
+});
+
 test('prefers the async iterator when the input has both, like `for await`', async t => {
 	const input = {
 		[Symbol.iterator]() {
