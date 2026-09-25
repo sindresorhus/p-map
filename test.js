@@ -925,6 +925,48 @@ test('pMapIterable - a source whose `next()` settles out of order keeps input or
 	t.deepEqual(await collectAsyncIterable(pMapIterable(source, (value, index) => `${value}${index}`, {concurrency: 4})), ['a0', 'b1', 'c2', 'd3']);
 });
 
+test('pMapIterable - the iterator it hands out can be consumed with `for await`', async t => {
+	const iterator = pMapIterable([1, 2, 3], async value => value * 2, {concurrency: 2})[Symbol.asyncIterator]();
+	const values = [];
+	for await (const value of iterator) {
+		values.push(value);
+	}
+
+	t.deepEqual(values, [2, 4, 6]);
+});
+
+test('pMapIterable - two consumers of the same result over a re-iterable source', async t => {
+	const mapped = pMapIterable([1, 2, 3], async value => value * 2);
+
+	const collect = async () => {
+		const values = [];
+		for await (const value of mapped) {
+			values.push(value);
+		}
+
+		return values;
+	};
+
+	t.deepEqual(await Promise.all([collect(), collect()]), [[2, 4, 6], [2, 4, 6]]);
+});
+
+test('pMap - a long input does not build up a deep call stack', async t => {
+	const input = Array.from({length: 20_000}, (_, index) => index);
+	const result = await pMap(input, async value => value, {concurrency: 1});
+	t.is(result.length, 20_000);
+	t.is(result.at(-1), 19_999);
+});
+
+test('pMap - an input element that resolves to `pMapSkip` is still passed to the mapper', async t => {
+	let mapperSawSkip = false;
+	const result = await pMap([Promise.resolve(pMapSkip)], async value => {
+		mapperSawSkip = value === pMapSkip;
+		return 'kept';
+	});
+	t.true(mapperSawSkip);
+	t.deepEqual(result, ['kept']);
+});
+
 test('pMapIterable - pMapSkip', async t => {
 	t.deepEqual(await collectAsyncIterable(pMapIterable([
 		1,
@@ -969,6 +1011,100 @@ test('pMapIterable - stops pulling input after the consumer breaks', async t => 
 	await delay(50);
 
 	t.is(mapperCalls, 3);
+});
+
+// `return()` has to take effect as soon as it is called. The generator is suspended on the
+// `next()` the consumer never awaited, so its `finally` does not run until that settles, and
+// without this the whole source is pulled and mapped in the meantime.
+test('pMapIterable - stops pulling input when `return()` is called while a `next()` is pending', async t => {
+	let mapperCalls = 0;
+	let sourcePulls = 0;
+
+	const source = [0, 1, 2, 3, 4];
+	const iterable = {
+		[Symbol.iterator]() {
+			let index = 0;
+			return {
+				next() {
+					sourcePulls++;
+					return {done: false, value: source[index++]};
+				},
+			};
+		},
+	};
+
+	const iterator = pMapIterable(iterable, async value => {
+		mapperCalls++;
+		// The first element is slow, so the generator is still waiting on it.
+		await delay(value === 0 ? 60 : 0);
+		return value;
+	}, {concurrency: 2, backpressure: 4})[Symbol.asyncIterator]();
+
+	const pending = iterator.next();
+	await delay(1);
+	await iterator.return();
+	pending.catch(() => {});
+
+	await delay(120);
+
+	// Only the two elements that were already in flight.
+	t.is(mapperCalls, 2);
+	t.true(sourcePulls <= 3);
+});
+
+// The same window again, this time for cleanup: a short-circuited pull must not make the generator
+// think the source ran out, or the source is never closed.
+// Same as the `return()` case, but the consumer signals the stop with `throw()`.
+test('pMapIterable - stops pulling input when `throw()` is called while a `next()` is pending', async t => {
+	let mapperCalls = 0;
+
+	const iterator = pMapIterable([0, 1, 2, 3, 4], async value => {
+		mapperCalls++;
+		// The first element is slow, so the generator is suspended on it when `throw()` lands.
+		await delay(value === 0 ? 60 : 0);
+		return value;
+	}, {concurrency: 2, backpressure: 4})[Symbol.asyncIterator]();
+
+	const pending = iterator.next();
+	await delay(1);
+	await t.throwsAsync(iterator.throw(new Error('injected')), {message: 'injected'});
+	pending.catch(() => {});
+
+	await delay(120);
+
+	// Only the two elements that were already in flight.
+	t.is(mapperCalls, 2);
+});
+
+test('pMapIterable - closes the source when `return()` is called while a `next()` is pending', async t => {
+	let returnCallCount = 0;
+	let index = 0;
+
+	const iterable = {
+		[Symbol.iterator]() {
+			return {
+				next: () => (index < 10 ? {done: false, value: index++} : {done: true}),
+				return() {
+					returnCallCount++;
+					return {done: true, value: undefined};
+				},
+			};
+		},
+	};
+
+	const iterator = pMapIterable(iterable, async value => {
+		// The first element is slow, so the generator is suspended on it when `return()` lands.
+		await delay(value === 0 ? 60 : 0);
+		return value;
+	}, {concurrency: 2, backpressure: 4})[Symbol.asyncIterator]();
+
+	const pending = iterator.next();
+	await delay(1);
+	await iterator.return();
+	pending.catch(() => {});
+	await delay(20);
+
+	t.is(returnCallCount, 1);
 });
 
 test('pMapIterable - stops pulling input after `return()` is called', async t => {

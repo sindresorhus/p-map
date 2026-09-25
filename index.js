@@ -263,112 +263,140 @@ export function pMapIterable(
 	}
 
 	return {
-		async * [Symbol.asyncIterator]() {
-			const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
-
-			const promises = [];
-			let pendingPromisesCount = 0;
+		[Symbol.asyncIterator]() {
+			// `isDone` lives outside the generator so the wrapper below can set it the moment the
+			// consumer asks to stop. The generator is suspended on a pending `next()` at that point,
+			// so its `finally` would not run until much later and workers finishing in the meantime
+			// would keep pulling and mapping input for nobody.
 			let isDone = false;
-			let isIterableDone = false;
-			let index = 0;
 
-			// Serialize the pulls like `for await` does so every element keeps its input position
-			// even when a source resolves its `next()` calls out of call order.
-			const pull = createPuller(iterator, () => isDone || isIterableDone);
+			const generator = (async function * () {
+				const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
-			function trySpawn() {
-				if (!(pendingPromisesCount < concurrency && promises.length < backpressure)) {
-					return;
-				}
+				const promises = [];
+				let pendingPromisesCount = 0;
+				let isIterableDone = false;
+				let index = 0;
 
-				pendingPromisesCount++;
+				// Serialize the pulls like `for await` does so every element keeps its input position
+				// even when a source resolves its `next()` calls out of call order.
+				const pull = createPuller(iterator, () => isDone || isIterableDone);
 
-				// Errors must be returned as a value instead of rejecting, otherwise a promise that
-				// the consumer abandons after an earlier error becomes an unhandled rejection.
-				const promise = (async () => {
-					try {
-						// Take the index when the pull starts, not when it resolves, so a source that
-						// settles its `next()` calls out of call order still gets the right position.
-						const currentIndex = index++;
-						const {done, value} = await pull();
-
-						if (done) {
-							isIterableDone = true;
-							pendingPromisesCount--;
-							return {done: true};
-						}
-
-						// Spawn if still below concurrency and backpressure limit
-						trySpawn();
-
-						const element = await value;
-
-						// The consumer stopped iterating or a mapper threw while this input was pending, so drop it instead of doing work nobody will consume.
-						if (isDone) {
-							pendingPromisesCount--;
-							return {done: false, value: pMapSkip};
-						}
-
-						const returnValue = await mapper(element, currentIndex);
-
-						pendingPromisesCount--;
-
-						if (returnValue === pMapSkip) {
-							const index = promises.indexOf(promise);
-
-							if (index > 0) {
-								promises.splice(index, 1);
-							}
-						}
-
-						// Spawn if still below backpressure limit and just dropped below concurrency limit
-						trySpawn();
-
-						return {done: false, value: returnValue};
-					} catch (error) {
-						pendingPromisesCount--;
-						isDone = true;
-						return {error};
-					}
-				})();
-
-				promises.push(promise);
-			}
-
-			trySpawn();
-
-			try {
-				while (promises.length > 0) {
-					const result = await promises[0]; // eslint-disable-line no-await-in-loop
-					const {done, value} = result;
-
-					promises.shift();
-
-					if (Object.hasOwn(result, 'error')) {
-						throw result.error;
-					}
-
-					if (done) {
+				function trySpawn() {
+					// Do not spawn once the consumer is gone. The pull would be wasted work, and for a
+					// one-shot source, like a queue, it takes an item nobody is going to ask for.
+					if (isDone || isIterableDone || !(pendingPromisesCount < concurrency && promises.length < backpressure)) {
 						return;
 					}
 
-					// Spawn if just dropped below backpressure limit and below the concurrency limit
-					trySpawn();
+					pendingPromisesCount++;
 
-					if (value === pMapSkip) {
-						continue;
+					// Errors must be returned as a value instead of rejecting, otherwise a promise that
+					// the consumer abandons after an earlier error becomes an unhandled rejection.
+					const promise = (async () => {
+						try {
+							// Take the index when the pull starts, not when it resolves, so a source that
+							// settles its `next()` calls out of call order still gets the right position.
+							const currentIndex = index++;
+							const {done, value} = await pull();
+
+							if (done) {
+								isIterableDone = true;
+								pendingPromisesCount--;
+								return {done: true};
+							}
+
+							// Spawn if still below concurrency and backpressure limit
+							trySpawn();
+
+							const element = await value;
+
+							// The consumer stopped iterating or a mapper threw while this input was pending, so drop it instead of doing work nobody will consume.
+							if (isDone) {
+								pendingPromisesCount--;
+								return {done: false, value: pMapSkip};
+							}
+
+							const returnValue = await mapper(element, currentIndex);
+
+							pendingPromisesCount--;
+
+							if (returnValue === pMapSkip) {
+								const index = promises.indexOf(promise);
+
+								if (index > 0) {
+									promises.splice(index, 1);
+								}
+							}
+
+							// Spawn if still below backpressure limit and just dropped below concurrency limit
+							trySpawn();
+
+							return {done: false, value: returnValue};
+						} catch (error) {
+							pendingPromisesCount--;
+							isDone = true;
+							return {error};
+						}
+					})();
+
+					promises.push(promise);
+				}
+
+				trySpawn();
+
+				try {
+					while (promises.length > 0) {
+						const result = await promises[0]; // eslint-disable-line no-await-in-loop
+						const {done, value} = result;
+
+						promises.shift();
+
+						if (Object.hasOwn(result, 'error')) {
+							throw result.error;
+						}
+
+						if (done) {
+							return;
+						}
+
+						// Spawn if just dropped below backpressure limit and below the concurrency limit
+						trySpawn();
+
+						if (value === pMapSkip) {
+							continue;
+						}
+
+						yield value;
 					}
+				} finally {
+					// Stop pulling input once the consumer stops iterating, otherwise pending skipped mappers keep spawning work.
+					isDone = true;
 
-					yield value;
+					if (!isIterableDone) {
+						closeIterator(iterator);
+					}
 				}
-			} finally {
-				// Stop pulling input once the consumer stops iterating, otherwise pending skipped mappers keep spawning work.
-				isDone = true;
+			})();
 
-				if (!isIterableDone) {
-					closeIterator(iterator);
-				}
-			}
+			return {
+				async next() {
+					return generator.next();
+				},
+				async return(value) {
+					isDone = true;
+					return generator.return(value);
+				},
+				async throw(error) {
+					isDone = true;
+					return generator.throw(error);
+				},
+				// Not `async`: `for await` takes the result of this call as the iterator itself, so
+				// returning a promise here would leave it looking for `next()` on a promise.
+				[Symbol.asyncIterator]() {
+					return this;
+				},
+			};
 		},
 	};
 }
