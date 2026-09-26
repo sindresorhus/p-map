@@ -4,6 +4,8 @@ type BaseOptions = {
 
 	Must be an integer from 1 and up or `Infinity`.
 
+	`pMap` can drop items that pulls from `input` already had in flight: when it stops early, because a mapper throws or the `signal` aborts, and, with `concurrency` above 1, when one pull reports `done` while another still gets an item. That is invisible for a re-readable input, like an array or a string, but a source that cannot be re-read, such as a queue, loses those items. With `concurrency: 1`, only an abort can drop an item.
+
 	@default Infinity
 	*/
 	readonly concurrency?: number;
@@ -13,7 +15,9 @@ export type Options = BaseOptions & {
 	/**
 	When `true`, the first mapper rejection will be rejected back to the consumer.
 
-	When `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [`AggregateError`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AggregateError) containing all the errors from the rejected promises. The errors are listed in the order of the input, not in the order the promises happened to settle in, so the same input always produces the same `AggregateError`.
+	When `false`, instead of stopping when a promise rejects, it will wait for all the promises to settle and then reject with an [`AggregateError`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AggregateError) containing all the errors from the rejected promises.
+
+	The errors are listed in the order of the input, not in the order the promises happened to settle in, so the same input always produces the same `AggregateError`.
 
 	Caveat: When `true`, any already-started async mappers will continue to run until they resolve or reject. In the case of infinite concurrency with sync iterables, *all* mappers are invoked on startup and will continue after the first rejection. Use the `signal` option for abort control.
 
@@ -24,7 +28,7 @@ export type Options = BaseOptions & {
 	/**
 	You can abort the promises using [`AbortController`](https://developer.mozilla.org/en-US/docs/Web/API/AbortController).
 
-	Aborting is delivered like any other timer, so it cannot take effect while `pMap` is inside a stretch of work that never waits on anything, such as draining a large input with mappers that just return a value. That is the same for `Promise.all` and for a plain loop.
+	An abort that comes from a timer or an I/O callback, like a `setTimeout`, cannot take effect while `pMap` is inside a stretch of work that never waits on a timer or I/O. Draining a large input with mappers that just return a value is one such stretch, and there the run finishes first. This is the same for `Promise.all` and for a plain loop, and it goes away as soon as the mapper or the source waits on a timer or I/O.
 
 	@example
 	```
@@ -50,7 +54,13 @@ export type IterableOptions = BaseOptions & {
 	/**
 	Maximum number of promises returned by `mapper` that have resolved but not yet collected by the consumer of the async iterable. Calls to `mapper` will be limited so that there is never too much backpressure.
 
+	Must be an integer from `concurrency` and up or `Infinity`.
+
 	Useful whenever you are consuming the iterable slower than what the mapper function can produce concurrently. For example, to avoid making an overwhelming number of HTTP requests if you are saving each of the results to a database.
+
+	A result of `pMapSkip` is collected by the consumer stepping over it, so it counts towards the limit until then. A mapper that skips most elements therefore still reads no further ahead than `backpressure` allows.
+
+	`backpressure` defaults to `concurrency`, which defaults to `Infinity`, so nothing bounds the read-ahead by default. A source that never ends is then read without limit until memory runs out. Give such a source a finite `concurrency`. That also bounds `backpressure`, since it defaults to `concurrency`.
 
 	Default: `options.concurrency`
 	*/

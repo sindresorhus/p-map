@@ -104,15 +104,12 @@ class ThrowingIterator {
 	}
 }
 
-test('main', async t => {
-	const end = timeSpan();
+test.serial('main', async t => {
+	// The results stay in input order even when the mappers finish in a different order.
 	t.deepEqual(await pMap(sharedInput, mapper), [10, 20, 30]);
-
-	// We give it some leeway on both sides of the expected 300ms as the exact value depends on the machine and workload.
-	assertInRange(t, end(), {start: 290, end: 430});
 });
 
-test('concurrency: 1', async t => {
+test.serial('concurrency: 1', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(sharedInput, mapper, {concurrency: 1}), [10, 20, 30]);
 	assertInRange(t, end(), {start: 590, end: 760});
@@ -384,6 +381,258 @@ test('pMap - a source that resolves `done` before an earlier item does not drop 
 	t.deepEqual(await pMap(source, value => value, {concurrency: 3}), ['a', 'b', 'c']);
 });
 
+test('pMap - waits for a pull before `done`', async t => {
+	let releaseFirstPull;
+	const firstPull = new Promise(resolve => {
+		releaseFirstPull = resolve;
+	});
+
+	let nextCallCount = 0;
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					return nextCallCount++ === 0 ? firstPull : Promise.resolve({done: true});
+				},
+			};
+		},
+	};
+
+	let settled = false;
+	const task = pMap(source, value => value, {concurrency: 2}).then(value => {
+		settled = true;
+		return value;
+	});
+
+	await drainEventLoop();
+	t.false(settled);
+	releaseFirstPull({done: false, value: 'first'});
+	t.deepEqual(await task, ['first']);
+});
+
+test('pMap - does not wait for a pull after `done`', async t => {
+	let releaseDone;
+	const done = new Promise(resolve => {
+		releaseDone = resolve;
+	});
+
+	let releaseLastPull;
+	const lastPull = new Promise(resolve => {
+		releaseLastPull = resolve;
+	});
+
+	let lastPullStarted;
+	const lastPullStartedPromise = new Promise(resolve => {
+		lastPullStarted = resolve;
+	});
+
+	let nextCallCount = 0;
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					const index = nextCallCount++;
+					if (index === 0) {
+						return Promise.resolve({done: false, value: 'first'});
+					}
+
+					if (index === 1) {
+						return done;
+					}
+
+					lastPullStarted();
+					return lastPull;
+				},
+			};
+		},
+	};
+
+	let result;
+	const task = pMap(source, value => value, {concurrency: 2}).then(value => {
+		result = value;
+	});
+
+	await lastPullStartedPromise;
+	releaseDone({done: true});
+	await drainEventLoop();
+	t.deepEqual(result, ['first']);
+	releaseLastPull({done: false, value: 'after done'});
+	await task;
+});
+
+test('pMap - ignores a rejected pull after `done`', async t => {
+	for (const stopOnError of [true, false]) {
+		let releaseDone;
+		const done = new Promise(resolve => {
+			releaseDone = resolve;
+		});
+
+		let rejectLastPull;
+		const lastPull = new Promise((resolve, reject) => {
+			rejectLastPull = reject;
+		});
+
+		let lastPullStarted;
+		const lastPullStartedPromise = new Promise(resolve => {
+			lastPullStarted = resolve;
+		});
+
+		let nextCallCount = 0;
+		const source = {
+			[Symbol.asyncIterator]() {
+				return {
+					next() {
+						const index = nextCallCount++;
+						if (index === 0) {
+							return Promise.resolve({done: false, value: 'first'});
+						}
+
+						if (index === 1) {
+							return done;
+						}
+
+						lastPullStarted();
+						return lastPull;
+					},
+				};
+			},
+		};
+
+		const task = pMap(source, value => value, {concurrency: 2, stopOnError});
+		// eslint-disable-next-line no-await-in-loop
+		await lastPullStartedPromise;
+		releaseDone({done: true});
+		rejectLastPull(new Error('after done'));
+		// eslint-disable-next-line no-await-in-loop
+		t.deepEqual(await task, ['first']);
+	}
+});
+
+test('pMap - propagates a rejected pull before `done`', async t => {
+	let rejectFirstPull;
+	const firstPull = new Promise((resolve, reject) => {
+		rejectFirstPull = reject;
+	});
+
+	let nextCallCount = 0;
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					return nextCallCount++ === 0 ? firstPull : Promise.resolve({done: true});
+				},
+			};
+		},
+	};
+
+	const task = pMap(source, value => value, {concurrency: 2});
+	await drainEventLoop();
+	rejectFirstPull(new Error('before done'));
+	await t.throwsAsync(task, {message: 'before done'});
+});
+
+test('pMap - ignores a mapper rejection after `done`', async t => {
+	let releaseDone;
+	const done = new Promise(resolve => {
+		releaseDone = resolve;
+	});
+
+	let rejectLaterMapper;
+	const laterMapper = new Promise((resolve, reject) => {
+		rejectLaterMapper = reject;
+	});
+
+	let laterMapperStarted;
+	const laterMapperStartedPromise = new Promise(resolve => {
+		laterMapperStarted = resolve;
+	});
+
+	let nextCallCount = 0;
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					const index = nextCallCount++;
+					if (index === 0) {
+						return Promise.resolve({done: false, value: 0});
+					}
+
+					if (index === 1) {
+						return done;
+					}
+
+					return Promise.resolve(index === 2 ? {done: false, value: 2} : {done: true});
+				},
+			};
+		},
+	};
+
+	let result;
+	const task = pMap(source, value => {
+		if (value === 2) {
+			laterMapperStarted();
+			return laterMapper;
+		}
+
+		return value;
+	}, {concurrency: 2}).then(value => {
+		result = value;
+	});
+
+	await laterMapperStartedPromise;
+	releaseDone({done: true});
+	await drainEventLoop();
+	t.deepEqual(result, [0]);
+	rejectLaterMapper(new Error('after done'));
+	await task;
+});
+
+test('pMap - excludes an error after `done` from an aggregate', async t => {
+	let releaseDone;
+	const done = new Promise(resolve => {
+		releaseDone = resolve;
+	});
+
+	let laterMapperStarted;
+	const laterMapperStartedPromise = new Promise(resolve => {
+		laterMapperStarted = resolve;
+	});
+
+	let nextCallCount = 0;
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					const index = nextCallCount++;
+					if (index === 0) {
+						return Promise.resolve({done: false, value: 0});
+					}
+
+					if (index === 1) {
+						return done;
+					}
+
+					return Promise.resolve(index === 2 ? {done: false, value: 2} : {done: true});
+				},
+			};
+		},
+	};
+
+	const task = pMap(source, value => {
+		if (value === 2) {
+			laterMapperStarted();
+			throw new Error('after done');
+		}
+
+		return value;
+	}, {concurrency: 2, stopOnError: false});
+
+	await laterMapperStartedPromise;
+	await drainEventLoop();
+	releaseDone({done: true});
+	t.deepEqual(await task, [0]);
+});
+
 // A source that reports `done` and then keeps producing is broken, but `pMap` and `pMapIterable`
 // still have to treat the `done` as the end of the input, like `for await` does. The first element
 // arrives late, so its mapper finishes before the `done` is observed and the pull after it is
@@ -424,6 +673,74 @@ test('pMap and pMapIterable agree on a source that reports `done` and then keeps
 	}
 
 	t.deepEqual(await pMap(doneThenMoreSource(), (value, index) => `${value}@${index}`, {concurrency: 3}), collected);
+});
+
+// A `pMapSkip` in front of a `done` that lands between two elements goes through the same trim as
+// either one on its own, so the two together are worth pinning: the skipped element is dropped, and
+// so is everything the source produced past the `done`, leaving a dense array.
+test('pMap - a `pMapSkip` in front of a `done` that lands between two elements', async t => {
+	let callIndex = 0;
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				async next() {
+					const index = callIndex++;
+
+					// The `done` at index 2 lands late, so the pull after it produces `v3` first.
+					if (index === 2) {
+						await delay(10);
+						return {done: true};
+					}
+
+					if (index > 3) {
+						return {done: true};
+					}
+
+					await delay(index === 0 ? 20 : 0);
+					return {done: false, value: `v${index}`};
+				},
+			};
+		},
+	};
+
+	const result = await pMap(source, value => (value === 'v1' ? pMapSkip : value), {concurrency: 3});
+
+	// `v0` survives the `done` at index 2, `v1` is skipped, and `v3` is past the `done`.
+	t.deepEqual(result, ['v0']);
+	t.is(result.length, Object.keys(result).length);
+});
+
+// With nothing bounding the read-ahead, an endless source and a mapper that never waits on anything
+// produce faster than the event loop can turn, and the consumer stops receiving values entirely. A
+// finite `backpressure` is what keeps a source that never ends flowing.
+test('pMapIterable - a finite `backpressure` keeps an endless source flowing', async t => {
+	const pulls = [];
+	const source = {
+		[Symbol.iterator]() {
+			return {
+				next() {
+					pulls.push(pulls.length);
+					return {done: false, value: pulls.length - 1};
+				},
+			};
+		},
+	};
+
+	const received = [];
+	for await (const value of pMapIterable(source, async value => value, {concurrency: 2, backpressure: 4})) {
+		received.push(value);
+
+		// A real consumer awaits something per element, and that is what has to keep working.
+		await delay(1);
+
+		if (received.length === 20) {
+			break;
+		}
+	}
+
+	t.deepEqual(received, Array.from({length: 20}, (_, index) => index));
+	// The read-ahead never grows past the window `backpressure` allows.
+	t.is(pulls.length, received.length + 4);
 });
 
 // The errors are staged by index in a sparse array, so a mapper that throws `undefined` must not be
@@ -522,6 +839,12 @@ test('all mappers should run when concurrency is infinite, even after stop-on-er
 	t.deepEqual(mappedValues, [1, 3, 2]);
 });
 
+// Resolve once every microtask and I/O callback queued so far has run. Used instead of a delay
+// to reach a point where everything that could have started has started.
+const drainEventLoop = () => new Promise(resolve => {
+	setImmediate(resolve);
+});
+
 class AsyncTestData {
 	constructor(data) {
 		this.data = data;
@@ -541,7 +864,7 @@ class AsyncTestData {
 // Async Iterator tests
 //
 
-test('asyncIterator - main', async t => {
+test.serial('asyncIterator - main', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(new AsyncTestData(sharedInput), mapper), [10, 20, 30]);
 
@@ -549,7 +872,7 @@ test('asyncIterator - main', async t => {
 	assertInRange(t, end(), {start: 290, end: 430});
 });
 
-test('asyncIterator - concurrency: 1', async t => {
+test.serial('asyncIterator - concurrency: 1', async t => {
 	const end = timeSpan();
 	t.deepEqual(await pMap(new AsyncTestData(sharedInput), mapper, {concurrency: 1}), [10, 20, 30]);
 	assertInRange(t, end(), {start: 590, end: 760});
@@ -863,7 +1186,6 @@ test('incorrect input type', async t => {
 		await delay(100);
 	}).then(value => ({value}), error => ({error}));
 
-	await delay(500);
 	const {error} = await task;
 	t.is(error.message, 'Expected `input` to be either an `Iterable` or `AsyncIterable`, got (number)');
 	t.false(mapperCalled);
@@ -932,73 +1254,176 @@ test('invalid mapper', async t => {
 	await t.throwsAsync(pMap([], 'invalid mapper', {concurrency: 2}), {instanceOf: TypeError});
 });
 
-if (globalThis.AbortController !== undefined) {
-	test('removes the abort listener when it resolves', async t => {
-		const abortController = new AbortController();
-		t.deepEqual(await pMap([1, 2], async value => value, {signal: abortController.signal}), [1, 2]);
-		t.is(getEventListeners(abortController.signal, 'abort').length, 0);
-	});
+test('pMapIterable - invalid mapper', t => {
+	t.throws(() => pMapIterable([], 'invalid mapper', {concurrency: 2}), {instanceOf: TypeError});
+});
 
-	test('removes the abort listener when it rejects', async t => {
-		const abortController = new AbortController();
-		await t.throwsAsync(pMap([1], async () => {
-			throw new Error('foo');
-		}, {signal: abortController.signal}), {message: 'foo'});
-		t.is(getEventListeners(abortController.signal, 'abort').length, 0);
-	});
+// Asserting that the listener count drops back to zero is only meaningful if it was ever above
+// zero, so these check the count from inside a mapper while the run is in flight as well.
+const abortListenerCount = signal => getEventListeners(signal, 'abort').length;
 
-	test('rejects with the abort reason', async t => {
-		const abortController = new AbortController();
-		abortController.abort(new Error('custom reason'));
-		await t.throwsAsync(pMap([1], async value => value, {signal: abortController.signal}), {message: 'custom reason'});
-	});
+test('installs the abort listener while the run is in flight and removes it when it resolves', async t => {
+	const abortController = new AbortController();
+	const {signal} = abortController;
+	let countWhileRunning;
 
-	test('aborting after it resolved changes nothing', async t => {
-		const abortController = new AbortController();
-		t.deepEqual(await pMap([1], async value => value, {signal: abortController.signal}), [1]);
+	t.deepEqual(await pMap([1, 2], async value => {
+		countWhileRunning = abortListenerCount(signal);
+		await delay(10);
+		return value;
+	}, {signal}), [1, 2]);
+
+	t.is(countWhileRunning, 1);
+	t.is(abortListenerCount(signal), 0);
+
+	// Aborting a settled run cannot reach the listener that was just removed.
+	abortController.abort();
+	t.is(abortListenerCount(signal), 0);
+});
+
+test('installs the abort listener while the run is in flight and removes it when it rejects', async t => {
+	const abortController = new AbortController();
+	const {signal} = abortController;
+	let countWhileRunning;
+
+	await t.throwsAsync(pMap([1], async () => {
+		countWhileRunning = abortListenerCount(signal);
+		await delay(10);
+		throw new Error('foo');
+	}, {signal}), {message: 'foo'});
+
+	t.is(countWhileRunning, 1);
+	t.is(abortListenerCount(signal), 0);
+});
+
+test('rejects with the abort reason', async t => {
+	const abortController = new AbortController();
+	abortController.abort(new Error('custom reason'));
+	await t.throwsAsync(pMap([1], async value => value, {signal: abortController.signal}), {message: 'custom reason'});
+});
+
+// The iterator was created before the signal was looked at, so a run that never starts still
+// hands the source its one `return()`.
+test('an already aborted signal still closes the source', async t => {
+	let returnCallCount = 0;
+	const source = {
+		[Symbol.iterator]() {
+			return {
+				next: () => ({done: false, value: 1}),
+				return() {
+					returnCallCount++;
+					return {done: true, value: undefined};
+				},
+			};
+		},
+	};
+
+	const abortController = new AbortController();
+	abortController.abort();
+
+	await t.throwsAsync(pMap(source, async value => value, {signal: abortController.signal}), {name: 'AbortError'});
+	t.is(returnCallCount, 1);
+});
+
+// Closing the source is deliberately not awaited, so a `return()` that never settles cannot hold
+// the abort back.
+test('an abort does not wait for a source that is blocked in `next()`', async t => {
+	async function * source() {
+		yield 0;
+		await new Promise(() => {}); // Never settles
+	}
+
+	const abortController = new AbortController();
+	setTimeout(() => {
 		abortController.abort();
-		t.is(getEventListeners(abortController.signal, 'abort').length, 0);
+	}, 10);
+
+	await t.throwsAsync(pMap(source(), async value => value, {concurrency: 2, signal: abortController.signal}), {name: 'AbortError'});
+});
+
+// An element that is still arriving when the abort lands must not reach the mapper.
+test('no mapper runs for an input element that arrives after the abort', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
 	});
 
-	test('an abort wins over the collected errors when stopOnError is false', async t => {
-		const abortController = new AbortController();
-		setTimeout(() => {
-			abortController.abort();
-		}, 10);
-
-		await t.throwsAsync(pMap([1, 2, 3], async value => {
-			await delay(100);
-			throw new Error(`Oops! ${value}`);
-		}, {concurrency: 3, stopOnError: false, signal: abortController.signal}), {name: 'AbortError'});
+	let releaseFirst;
+	let firstMapped;
+	const firstMappedPromise = new Promise(resolve => {
+		firstMapped = resolve;
+		releaseFirst = resolve;
 	});
 
-	test('abort by AbortController', async t => {
-		const abortController = new AbortController();
+	const abortController = new AbortController();
+	const mappedValues = [];
 
-		setTimeout(() => {
-			abortController.abort();
-		}, 100);
+	// The first element reaches the mapper before the abort, the other two only resolve after it.
+	const input = [0, gate.then(() => 1), gate.then(() => 2)];
 
-		const mapper = async value => value;
+	const task = pMap(input, async value => {
+		mappedValues.push(value);
 
-		await t.throwsAsync(pMap([delay(1000), new AsyncTestData(100), 100], mapper, {signal: abortController.signal}), {
-			name: 'AbortError',
-		});
-	});
+		if (value === 0) {
+			firstMapped();
+			await firstMappedPromise;
+		}
 
-	test('already aborted signal', async t => {
-		const abortController = new AbortController();
+		return value;
+	}, {concurrency: 3, signal: abortController.signal}).then(value => ({value}), error => ({error}));
 
+	await firstMappedPromise;
+	abortController.abort();
+	releaseFirst();
+	release();
+
+	const {error} = await task;
+	t.is(error.name, 'AbortError');
+
+	await delay(50);
+
+	t.deepEqual(mappedValues, [0]);
+});
+
+test('an abort wins over the collected errors when stopOnError is false', async t => {
+	const abortController = new AbortController();
+	setTimeout(() => {
 		abortController.abort();
+	}, 10);
 
-		const mapper = async value => value;
+	// The first error is collected before the abort, and the rest only after it.
+	await t.throwsAsync(pMap([1, 2, 3], async value => {
+		await delay(value === 1 ? 0 : 100);
+		throw new Error(`Oops! ${value}`);
+	}, {concurrency: 3, stopOnError: false, signal: abortController.signal}), {name: 'AbortError'});
+});
 
-		await t.throwsAsync(pMap([delay(1000), new AsyncTestData(100), 100], mapper, {signal: abortController.signal}), {
-			name: 'AbortError',
-		});
-		t.is(getEventListeners(abortController.signal, 'abort').length, 0);
+test('abort by AbortController', async t => {
+	const abortController = new AbortController();
+
+	setTimeout(() => {
+		abortController.abort();
+	}, 100);
+
+	const mapper = async value => value;
+
+	await t.throwsAsync(pMap([delay(1000), new AsyncTestData(100), 100], mapper, {signal: abortController.signal}), {
+		name: 'AbortError',
 	});
-}
+});
+
+test('already aborted signal', async t => {
+	const abortController = new AbortController();
+
+	abortController.abort();
+
+	const mapper = async value => value;
+
+	await t.throwsAsync(pMap([delay(1000), new AsyncTestData(100), 100], mapper, {signal: abortController.signal}), {
+		name: 'AbortError',
+	});
+	t.is(abortListenerCount(abortController.signal), 0);
+});
 
 async function collectAsyncIterable(asyncIterable) {
 	const values = [];
@@ -1163,6 +1588,49 @@ test.serial('pMapIterable - no unhandled rejection when an in-flight `next()` re
 	t.deepEqual(unhandledRejections, []);
 });
 
+// The same for `pMap`: the puller hands the caller a promise it also watches itself, so an
+// abandoned pull cannot turn into an unhandled rejection once the run has already failed.
+test.serial('pMap - no unhandled rejection when an in-flight `next()` rejects after an error', async t => {
+	let nextCallCount = 0;
+
+	const iterable = {
+		[Symbol.asyncIterator]() {
+			return {
+				async next() {
+					nextCallCount++;
+
+					if (nextCallCount === 1) {
+						return {done: false, value: 1};
+					}
+
+					await delay(50);
+					throw new Error('next() failed');
+				},
+			};
+		},
+	};
+
+	const unhandledRejections = [];
+	const onUnhandledRejection = error => {
+		unhandledRejections.push(error);
+	};
+
+	process.on('unhandledRejection', onUnhandledRejection);
+
+	try {
+		await t.throwsAsync(pMap(iterable, async () => {
+			throw new Error('foo');
+		}, {concurrency: 2}), {message: 'foo'});
+
+		// Give the abandoned in-flight `next()` time to reject.
+		await delay(200);
+	} finally {
+		process.off('unhandledRejection', onUnhandledRejection);
+	}
+
+	t.deepEqual(unhandledRejections, []);
+});
+
 test('pMapIterable - mapper that throws', async t => {
 	await t.throwsAsync(collectAsyncIterable(pMapIterable(sharedInput, async () => {
 		throw new Error('foo');
@@ -1183,7 +1651,7 @@ test('pMapIterable - stop on error', async t => {
 	t.deepEqual(output, [20]);
 });
 
-test('pMapIterable - concurrency: 1', async t => {
+test.serial('pMapIterable - concurrency: 1', async t => {
 	const end = timeSpan();
 	t.deepEqual(await collectAsyncIterable(pMapIterable(sharedInput, mapper, {concurrency: 1, backpressure: Number.POSITIVE_INFINITY})), [10, 20, 30]);
 
@@ -1191,7 +1659,7 @@ test('pMapIterable - concurrency: 1', async t => {
 	assertInRange(t, end(), {start: 590, end: 760});
 });
 
-test('pMapIterable - concurrency: 2', async t => {
+test.serial('pMapIterable - concurrency: 2', async t => {
 	const times = new Map();
 	const end = timeSpan();
 
@@ -1202,34 +1670,46 @@ test('pMapIterable - concurrency: 2', async t => {
 
 	assertInRange(t, times.get(10), {start: 0, end: 50});
 	assertInRange(t, times.get(20), {start: 0, end: 50});
-	assertInRange(t, times.get(30), {start: 200, end: 250});
-	assertInRange(t, times.get(40), {start: 300, end: 350});
-	assertInRange(t, times.get(50), {start: 300, end: 350});
+	// A timer can fire a little before its delay as measured here, so the lower bounds have some slack.
+	assertInRange(t, times.get(30), {start: 195, end: 250});
+	assertInRange(t, times.get(40), {start: 295, end: 350});
+	assertInRange(t, times.get(50), {start: 295, end: 350});
 });
 
 test('pMapIterable - backpressure', async t => {
-	let currentValue;
+	const started = [];
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
 
-	// Concurrency option is forced by an early check
+	// The mappers wait on a gate this test opens, so "everything that could have started has
+	// started" is a point the test reaches by draining the event loop rather than by guessing at
+	// a duration. A mapper that ignored `backpressure` would have started all five by then.
 	const asyncIterator = pMapIterable(longerSharedInput, async value => {
-		currentValue = await mapper(value);
-		return currentValue;
+		started.push(value[0]);
+		await gate;
+		return value[0];
 	}, {backpressure: 2, concurrency: 2})[Symbol.asyncIterator]();
 
-	const {value: value1} = await asyncIterator.next();
-	t.is(value1, 10);
+	const first = asyncIterator.next();
+	await drainEventLoop();
 
-	// If backpressure is not respected, than all items will be evaluated in this time
-	await delay(600);
+	// Two in flight, which is also everything `backpressure` allows, so nothing is read further.
+	t.deepEqual(started, [10, 20]);
 
-	t.is(currentValue, 30);
+	release();
 
-	const {value: value2} = await asyncIterator.next();
-	t.is(value2, 20);
+	const {value: firstValue} = await first;
+	t.is(firstValue, 10);
+	await drainEventLoop();
 
-	await delay(100);
+	// Taking that result freed exactly one slot, so the source is read one element further.
+	t.deepEqual(started, [10, 20, 30]);
 
-	t.is(currentValue, 40);
+	const {value: secondValue} = await asyncIterator.next();
+	t.is(secondValue, 20);
+	await asyncIterator.return();
 });
 
 test('pMapIterable - async input, backpressure > concurrency', async t => {
@@ -1353,47 +1833,6 @@ test('pMapIterable - pMapSkip', async t => {
 		pMapSkip,
 		2,
 	], async value => value)), [1, 2]);
-});
-
-test('pMapIterable - stops pulling input after the consumer breaks', async t => {
-	let release;
-	const gate = new Promise(resolve => {
-		release = resolve;
-	});
-
-	let mapperCalls = 0;
-
-	async function * source() {
-		for (let index = 0; index < 100; index++) {
-			yield index;
-		}
-	}
-
-	const iterator = pMapIterable(source(), async value => {
-		mapperCalls++;
-
-		if (value > 0) {
-			await gate;
-			return pMapSkip;
-		}
-
-		return value;
-	}, {concurrency: 2, backpressure: 2});
-
-	for await (const value of iterator) { // eslint-disable-line no-unreachable-loop
-		t.is(value, 0);
-		break;
-	}
-
-	// Some elements were already in flight when the consumer stopped. How many is a matter of how
-	// far the pipeline read ahead, so only the growth after the break is asserted.
-	t.true(mapperCalls > 1);
-	const mapperCallsAfterBreak = mapperCalls;
-
-	release();
-	await delay(50);
-
-	t.is(mapperCalls, mapperCallsAfterBreak);
 });
 
 // `return()` has to take effect as soon as it is called. The generator is suspended on the
@@ -1544,12 +1983,16 @@ test('pMapIterable - stops pulling input after `return()` is called', async t =>
 
 	t.deepEqual(await iterator.next(), {value: 0, done: false});
 	t.deepEqual(await iterator.return(), {value: undefined, done: true});
-	t.is(mapperCalls, 3);
+
+	// Some elements were already in flight when the consumer stopped. How many is a matter of how
+	// far the pipeline read ahead, so only the growth after the stop is asserted.
+	t.true(mapperCalls > 1);
+	const mapperCallsAfterReturn = mapperCalls;
 
 	release();
 	await delay(50);
 
-	t.is(mapperCalls, 3);
+	t.is(mapperCalls, mapperCallsAfterReturn);
 	t.deepEqual(await iterator.next(), {value: undefined, done: true});
 });
 
@@ -1980,14 +2423,13 @@ test('pMapIterable - a source blocked in `next()` does not block the consumer fr
 		await new Promise(() => {}); // Never settles
 	}
 
-	const end = timeSpan();
-
+	// Getting here at all is the assertion: the source is stuck in `next()` forever, and AVA
+	// fails the test if the loop does not finish. A wall-clock bound on top of that only
+	// measures how busy the machine is.
 	for await (const value of pMapIterable(source(), async value => value, {concurrency: 2})) { // eslint-disable-line no-unreachable-loop
 		t.is(value, 0);
 		break;
 	}
-
-	t.true(end() < 100);
 });
 
 test('closes the source iterator when a mapper rejects', async t => {

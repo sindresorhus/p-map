@@ -8,30 +8,18 @@ export default async function pMap(
 	} = {},
 ) {
 	return new Promise((resolve_, reject_) => {
-		// Optional chaining, so a nullish input gets this message rather than Node's internal
-		// "null is not iterable".
-		if (iterable?.[Symbol.iterator] === undefined && iterable?.[Symbol.asyncIterator] === undefined) {
-			throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
-		}
-
-		if (typeof mapper !== 'function') {
-			throw new TypeError('Mapper function is required');
-		}
-
-		if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
-			throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
-		}
+		validateOptions(iterable, mapper, concurrency);
 
 		const result = [];
 		// Stage the errors by index, like `result`, so they are reported in input order.
 		const errors = [];
-		const skippedIndexesMap = new Map();
+		let skippedCount = 0;
 		let isResolved = false;
 		let isIterableDone = false;
 		const pendingIndexes = new Set();
 		let doneIndex = Number.POSITIVE_INFINITY;
 		let currentIndex = 0;
-		const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
+		const iterator = getIterator(iterable);
 
 		const signalListener = () => {
 			reject(signal.reason);
@@ -106,25 +94,15 @@ export default async function pMap(
 			const lastIndex = Math.min(doneIndex, result.length);
 
 			// Every index below `lastIndex` has a value: an index only goes unassigned when the pull
-			// below it reported `done`, and that is at `doneIndex` itself. So the array is dense and
-			// can be handed over as is unless there is a `pMapSkip` to drop.
-			if (lastIndex === result.length && skippedIndexesMap.size === 0) {
+			// below it reported `done`, and that is at `doneIndex` itself. So the array is dense
+			// below `lastIndex`, and the fast path can hand it over untouched.
+			if (lastIndex === result.length && skippedCount === 0) {
 				resolve(result);
 				return;
 			}
 
-			const pureResult = [];
-
-			for (let index = 0; index < lastIndex; index++) {
-				// Support multiple `pMapSkip`'s.
-				if (skippedIndexesMap.get(index) === pMapSkip) {
-					continue;
-				}
-
-				pureResult.push(result[index]);
-			}
-
-			resolve(pureResult);
+			// Otherwise this drops the skipped results and whatever the `done` cut off.
+			resolve(result.slice(0, lastIndex).filter(value => value !== pMapSkip));
 		};
 
 		const next = async () => {
@@ -176,13 +154,13 @@ export default async function pMap(
 
 					const value = await mapper(element, index);
 
-					// Use Map to stage the index of the element.
+					// Ignore an item produced after an earlier pull reported `done`.
 					if (index >= doneIndex) {
 						return;
 					}
 
 					if (value === pMapSkip) {
-						skippedIndexesMap.set(index, value);
+						skippedCount++;
 					}
 
 					result[index] = value;
@@ -246,19 +224,7 @@ export function pMapIterable(
 		backpressure = concurrency,
 	} = {},
 ) {
-	// Optional chaining, so a nullish input gets this message rather than Node's internal
-	// "null is not iterable".
-	if (iterable?.[Symbol.iterator] === undefined && iterable?.[Symbol.asyncIterator] === undefined) {
-		throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
-	}
-
-	if (typeof mapper !== 'function') {
-		throw new TypeError('Mapper function is required');
-	}
-
-	if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
-		throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
-	}
+	validateOptions(iterable, mapper, concurrency);
 
 	if (!((Number.isSafeInteger(backpressure) && backpressure >= concurrency) || backpressure === Number.POSITIVE_INFINITY)) {
 		throw new TypeError(`Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${typeof backpressure})`);
@@ -273,7 +239,7 @@ export function pMapIterable(
 			let isDone = false;
 
 			const generator = (async function * () {
-				const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
+				const iterator = getIterator(iterable);
 
 				// Results are consumed from the front with a moving `headIndex` instead of `shift()`.
 				// `shift()` moves every remaining entry, which is O(n) per element and made the whole
@@ -411,6 +377,29 @@ export function pMapIterable(
 }
 
 export const pMapSkip = Symbol('skip');
+
+// The checks `pMap` and `pMapIterable` share, so both reject the same input the same way.
+// `pMap` runs this inside its promise, so a bad argument rejects rather than throws.
+function validateOptions(iterable, mapper, concurrency) {
+	// Optional chaining, so a nullish input gets this message rather than Node's internal
+	// "null is not iterable".
+	if (iterable?.[Symbol.iterator] === undefined && iterable?.[Symbol.asyncIterator] === undefined) {
+		throw new TypeError(`Expected \`input\` to be either an \`Iterable\` or \`AsyncIterable\`, got (${typeof iterable})`);
+	}
+
+	if (typeof mapper !== 'function') {
+		throw new TypeError('Mapper function is required');
+	}
+
+	if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
+		throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
+	}
+}
+
+// Take the async iterator when the input has both, like `for await` does.
+function getIterator(iterable) {
+	return iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
+}
 
 // Close the source so it can release its resources, like `for await` does.
 // Callers must not await this so a source that is blocked in `next()` cannot block them.

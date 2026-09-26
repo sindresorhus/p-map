@@ -97,6 +97,9 @@ Useful whenever you are consuming the iterable slower than what the mapper funct
 
 A result of `pMapSkip` is collected by the consumer stepping over it, so it counts towards the limit until then. A mapper that skips most elements therefore still reads no further ahead than `backpressure` allows.
 
+> [!NOTE]
+> `backpressure` defaults to `concurrency`, which defaults to `Infinity`, so nothing bounds the read-ahead by default. A source that never ends is then read without limit until memory runs out. Give such a source a finite `concurrency`. That also bounds `backpressure`, since it defaults to `concurrency`.
+
 ##### stopOnError
 
 **Only for `pMap`**

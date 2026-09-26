@@ -1,37 +1,18 @@
 import test from 'ava';
-import timeSpan from 'time-span';
 import assertInRange from './assert-in-range.js';
+import countArrayWork from './count-array-work.js';
 import pMap, {pMapSkip} from './index.js';
 
-function generateSkipPerformanceData(length) {
-	const data = [];
-	for (let index = 0; index < length; index++) {
-		data.push(pMapSkip);
-	}
-
-	return data;
+function numberRange(length) {
+	return Array.from({length}, (_, index) => index);
 }
 
-test('multiple pMapSkips - algorithmic complexity', async t => {
-	const testData = [generateSkipPerformanceData(1000), generateSkipPerformanceData(10_000), generateSkipPerformanceData(100_000)];
-	const testDurationsMS = [];
-
-	for (const data of testData) {
-		const end = timeSpan();
-		// eslint-disable-next-line no-await-in-loop
-		await pMap(data, async value => value);
-		testDurationsMS.push(end());
-	}
-
-	for (let index = 0; index < testDurationsMS.length - 1; index++) {
-		// Time for 10x more items should take between 9x and 11x more time.
-		const smallerDuration = testDurationsMS[index];
-		const longerDuration = testDurationsMS[index + 1];
-
-		// The longer test needs to be a little longer and also not 10x more than the
-		// shorter test. This is not perfect... there is some fluctuation.
-		// The idea here is to catch a regression that makes `pMapSkip` handling O(n^2)
-		// on the number of `pMapSkip` items in the input.
-		assertInRange(t, longerDuration, {start: 1.2 * smallerDuration, end: 15 * smallerDuration});
-	}
+// Serial, because the helper swaps out `Array.prototype` for the duration.
+test.serial('multiple pMapSkips - algorithmic complexity', async t => {
+	// Guards against `pMapSkip` handling that scans or splices the result per skipped element,
+	// which is O(n^2) on the number of `pMapSkip` items in the input. Only the upper bound: `pMap`
+	// has no consumed prefix to trim, so there is no minimum amount of work to require.
+	const size = 10_000;
+	const entriesWorked = await countArrayWork(async () => pMap(numberRange(size), () => pMapSkip));
+	assertInRange(t, entriesWorked, {end: size * 10});
 });
