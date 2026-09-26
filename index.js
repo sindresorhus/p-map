@@ -275,7 +275,11 @@ export function pMapIterable(
 			const generator = (async function * () {
 				const iterator = iterable[Symbol.asyncIterator] === undefined ? iterable[Symbol.iterator]() : iterable[Symbol.asyncIterator]();
 
-				const promises = [];
+				// Results are consumed from the front with a moving `headIndex` instead of `shift()`.
+				// `shift()` moves every remaining entry, which is O(n) per element and made the whole
+				// run O(n²) whenever `backpressure` let the array grow, which is the default.
+				let promises = [];
+				let headIndex = 0;
 				let pendingPromisesCount = 0;
 				let isIterableDone = false;
 				let index = 0;
@@ -285,7 +289,7 @@ export function pMapIterable(
 				function trySpawn() {
 					// Do not spawn once the consumer is gone. The pull would be wasted work, and for a
 					// one-shot source, like a queue, it takes an item nobody is going to ask for.
-					if (isDone || isIterableDone || !(pendingPromisesCount < concurrency && promises.length < backpressure)) {
+					if (isDone || isIterableDone || !(pendingPromisesCount < concurrency && promises.length - headIndex < backpressure)) {
 						return;
 					}
 
@@ -321,17 +325,6 @@ export function pMapIterable(
 
 							pendingPromisesCount--;
 
-							if (returnValue === pMapSkip) {
-								// Position 0 is left alone: the consumer may be awaiting it right now, so
-								// splicing it would make the consumer shift the wrong promise. It handles
-								// the `pMapSkip` itself.
-								const position = promises.indexOf(promise);
-
-								if (position > 0) {
-									promises.splice(position, 1);
-								}
-							}
-
 							// Spawn if still below backpressure limit and just dropped below concurrency limit
 							trySpawn();
 
@@ -349,11 +342,22 @@ export function pMapIterable(
 				trySpawn();
 
 				try {
-					while (promises.length > 0) {
-						const result = await promises[0]; // eslint-disable-line no-await-in-loop
+					while (headIndex < promises.length) {
+						const result = await promises[headIndex]; // eslint-disable-line no-await-in-loop
 						const {done, value} = result;
 
-						promises.shift();
+						// Release the entry instead of leaving it for a `shift()` to move, and drop the
+						// consumed prefix once it is at least half the array. That keeps the backing
+						// store proportional to the results still in flight rather than to the total
+						// ever spawned, which matters for an endless source, while costing one copy per
+						// half of the array, so it stays O(1) per element.
+						promises[headIndex] = undefined;
+						headIndex++;
+
+						if (headIndex * 2 >= promises.length) {
+							promises = promises.slice(headIndex);
+							headIndex = 0;
+						}
 
 						if (Object.hasOwn(result, 'error')) {
 							throw result.error;
@@ -366,6 +370,9 @@ export function pMapIterable(
 						// Spawn if just dropped below backpressure limit and below the concurrency limit
 						trySpawn();
 
+						// A `pMapSkip` result stays in `promises` and is stepped over here. Splicing it out
+						// in the worker instead would make every skip an O(n) scan and move, so a run of
+						// skips would be O(n²).
 						if (value === pMapSkip) {
 							continue;
 						}

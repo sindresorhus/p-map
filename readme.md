@@ -92,6 +92,8 @@ Maximum number of promises returned by `mapper` that have resolved but not yet c
 
 Useful whenever you are consuming the iterable slower than what the mapper function can produce concurrently. For example, to avoid making an overwhelming number of HTTP requests if you are saving each of the results to a database.
 
+A result of `pMapSkip` is collected by the consumer stepping over it, so it counts towards the limit until then. A mapper that skips most elements therefore still reads no further ahead than `backpressure` allows.
+
 ##### stopOnError
 
 **Only for `pMap`**

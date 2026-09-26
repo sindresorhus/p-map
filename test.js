@@ -932,6 +932,38 @@ test('pMapIterable - async input, backpressure > concurrency', async t => {
 	t.deepEqual(log, [1, 1, 2, 2, 3, 3]);
 });
 
+test('pMapIterable - a skipped result holds its backpressure slot until the consumer passes it', async t => {
+	let pulledCount = 0;
+
+	async function * source() {
+		for (let index = 0; index < 1000; index++) {
+			pulledCount++;
+			yield index;
+		}
+	}
+
+	// The first element is slow and everything behind it skips, so the skipped results are
+	// resolved results the consumer has not collected yet. Each one has to hold a backpressure
+	// slot, otherwise dropping them frees a slot and the whole source is read.
+	const iterator = pMapIterable(source(), async value => {
+		if (value === 0) {
+			await delay(50);
+			return value;
+		}
+
+		return pMapSkip;
+	}, {concurrency: 4, backpressure: 4})[Symbol.asyncIterator]();
+
+	const {value: first} = await iterator.next();
+	t.is(first, 0);
+
+	// A handful of elements: `backpressure`, plus what freeing the first result's slot allows.
+	// The point is that it is nowhere near the whole source.
+	t.true(pulledCount <= 6, `pulled ${pulledCount} elements, expected at most 6`);
+
+	await iterator.return();
+});
+
 test('pMapIterable - a source whose `next()` settles out of order keeps input order', async t => {
 	const source = outOfOrderSource(['a', 'b', 'c', 'd'], [50, 5, 40, 5]);
 	t.deepEqual(await collectAsyncIterable(pMapIterable(source, (value, index) => `${value}${index}`, {concurrency: 4})), ['a0', 'b1', 'c2', 'd3']);
