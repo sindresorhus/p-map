@@ -65,6 +65,27 @@ export type IterableOptions = BaseOptions & {
 	Default: `options.concurrency`
 	*/
 	readonly backpressure?: number;
+
+	/**
+	Whether to yield the results in `input` order.
+
+	When `false`, each result is yielded as soon as it is ready. A slow element then no longer holds back the results after it, and those results no longer fill up `backpressure` while they wait, so `mapper` keeps running at full `concurrency`. Use it when the order of the results does not matter.
+
+	An error from `mapper` is then also thrown as soon as it happens, instead of after the results before it. The `index` passed to `mapper` is still the position in `input`.
+
+	Default: `true`
+
+	@example
+	```
+	import {pMapIterable} from 'p-map';
+
+	// Each page is saved as soon as it is downloaded, without waiting for slower pages before it
+	for await (const page of pMapIterable(urls, downloadPage, {concurrency: 8, preserveOrder: false})) {
+		await savePage(page);
+	}
+	```
+	*/
+	readonly preserveOrder?: boolean;
 };
 
 type MaybePromise<T> = T | Promise<T>;
@@ -116,7 +137,7 @@ export default function pMap<Element, NewElement>(
 /**
 @param input - Synchronous or asynchronous iterable that is iterated over concurrently, calling the `mapper` function for each element. Each iterated item is `await`'d before the `mapper` is invoked so the iterable may return a `Promise` that resolves to an item. Asynchronous iterables (different from synchronous iterables that return `Promise` that resolves to an item) can be used when the next item may not be ready without waiting for an asynchronous process to complete and/or the end of the iterable may be reached after the asynchronous process completes. For example, reading from a remote queue when the queue has reached empty, or reading lines from a stream.
 @param mapper - Function which is called for every item in `input`. Expected to return a `Promise` or value.
-@returns An async iterable that streams each return value from `mapper` in order.
+@returns An async iterable that streams each return value from `mapper` in order, or as soon as each is ready when `preserveOrder` is `false`.
 
 @example
 ```

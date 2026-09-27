@@ -673,6 +673,7 @@ test('pMap and pMapIterable agree on a source that reports `done` and then keeps
 	}
 
 	t.deepEqual(await pMap(doneThenMoreSource(), (value, index) => `${value}@${index}`, {concurrency: 3}), collected);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(doneThenMoreSource(), (value, index) => `${value}@${index}`, {concurrency: 3, preserveOrder: false})), collected);
 });
 
 // A `pMapSkip` in front of a `done` that lands between two elements goes through the same trim as
@@ -1764,6 +1765,560 @@ test('pMapIterable - a skipped result holds its backpressure slot until the cons
 test('pMapIterable - a source whose `next()` settles out of order keeps input order', async t => {
 	const source = outOfOrderSource(['a', 'b', 'c', 'd'], [50, 5, 40, 5]);
 	t.deepEqual(await collectAsyncIterable(pMapIterable(source, (value, index) => `${value}${index}`, {concurrency: 4})), ['a0', 'b1', 'c2', 'd3']);
+});
+
+// Each mapper waits on a gate of its own, so the test decides the order the mappers settle in rather than guessing at durations.
+function gatedMapper() {
+	const releases = new Map();
+
+	return {
+		mapper: value => new Promise(resolve => {
+			releases.set(value, () => {
+				resolve(value);
+			});
+		}),
+		release(value) {
+			releases.get(value)();
+		},
+	};
+}
+
+test('pMapIterable - `preserveOrder: false` yields the results in the order they settle', async t => {
+	const {mapper, release} = gatedMapper();
+
+	// The `index` is still the position in the input, whatever order the results come out in.
+	const iterator = pMapIterable(['a', 'b', 'c'], async (value, index) => `${await mapper(value)}${index}`, {concurrency: 3, preserveOrder: false})[Symbol.asyncIterator]();
+	const first = iterator.next();
+	await drainEventLoop();
+
+	release('c');
+	t.deepEqual(await first, {done: false, value: 'c2'});
+
+	release('a');
+	t.deepEqual(await iterator.next(), {done: false, value: 'a0'});
+
+	release('b');
+	t.deepEqual(await iterator.next(), {done: false, value: 'b1'});
+
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` keeps mapping while an earlier element is pending', async t => {
+	const {mapper, release} = gatedMapper();
+
+	// The first element holds, and with `preserveOrder` the results behind it would fill up `backpressure` and stop the mapping until it settles.
+	const iterator = pMapIterable([0, 1, 2, 3, 4], value => value === 0 ? mapper(value) : value, {concurrency: 2, preserveOrder: false})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 1});
+	t.deepEqual(await iterator.next(), {done: false, value: 2});
+	t.deepEqual(await iterator.next(), {done: false, value: 3});
+	t.deepEqual(await iterator.next(), {done: false, value: 4});
+
+	release(0);
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` throws a mapper error while an earlier element is pending', async t => {
+	const {mapper} = gatedMapper();
+
+	const iterator = pMapIterable([0, 1], value => {
+		if (value === 1) {
+			throw new Error('foo');
+		}
+
+		return mapper(value);
+	}, {concurrency: 2, preserveOrder: false})[Symbol.asyncIterator]();
+
+	await t.throwsAsync(iterator.next(), {message: 'foo'});
+});
+
+test('pMapIterable - `preserveOrder: false` still applies `backpressure`', async t => {
+	const {mapper, release} = gatedMapper();
+	const started = [];
+
+	const iterator = pMapIterable([0, 1, 2, 3, 4], value => {
+		started.push(value);
+		return mapper(value);
+	}, {concurrency: 2, backpressure: 2, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1]);
+
+	release(1);
+	t.deepEqual(await first, {done: false, value: 1});
+	await drainEventLoop();
+
+	// Taking that result freed exactly one slot, so the source is read one element further.
+	t.deepEqual(started, [0, 1, 2]);
+
+	await iterator.return();
+});
+
+test('pMapIterable - `preserveOrder: false` yields every result when the source ends while mappers are running', async t => {
+	const {mapper, release} = gatedMapper();
+	const source = exhaustibleSource(2);
+
+	// With a spare worker, the pull that reports `done` settles while both mappers are still held, so the `done` is the first result in line and must not end the iteration.
+	const iterator = pMapIterable(source, mapper, {concurrency: 3, preserveOrder: false})[Symbol.asyncIterator]();
+	const first = iterator.next();
+	await drainEventLoop();
+
+	release(1);
+	t.deepEqual(await first, {done: false, value: 1});
+
+	release(0);
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.is(source.nextCallsAfterDone, 0);
+});
+
+test('pMapIterable - does not wait for a pull made after the source reported `done`', async t => {
+	for (const preserveOrder of [true, false]) {
+		let pullCount = 0;
+		let reportDone;
+
+		// Like a queue, the source blocks in `next()` once it has reported `done`.
+		const source = {
+			[Symbol.asyncIterator]() {
+				return {
+					next() {
+						const pull = pullCount++;
+
+						if (pull === 0) {
+							return Promise.resolve({done: false, value: 0});
+						}
+
+						if (pull === 1) {
+							return new Promise(resolve => {
+								reportDone = () => {
+									resolve({done: true, value: undefined});
+								};
+							});
+						}
+
+						return new Promise(() => {});
+					},
+				};
+			},
+		};
+
+		const iterator = pMapIterable(source, async value => value, {concurrency: 2, preserveOrder})[Symbol.asyncIterator]();
+		t.deepEqual(await iterator.next(), {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		// The first mapper finished while the pull that reports `done` was pending, so a third pull went out, and the source never answers it.
+		t.is(pullCount, 3);
+
+		reportDone();
+		t.deepEqual(await iterator.next(), {done: true, value: undefined}); // eslint-disable-line no-await-in-loop
+	}
+});
+
+test('pMapIterable - `preserveOrder: false` yields the item of a pull that settles after a later pull reported `done`', async t => {
+	let pullCount = 0;
+	const pullResolvers = [];
+
+	// The source settles its `next()` calls out of call order, like `outOfOrderSource`.
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					if (pullCount++ === 0) {
+						return Promise.resolve({done: false, value: 0});
+					}
+
+					return new Promise(resolve => {
+						pullResolvers.push(resolve);
+					});
+				},
+			};
+		},
+	};
+
+	const iterator = pMapIterable(source, async value => value, {concurrency: 2, preserveOrder: false})[Symbol.asyncIterator]();
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	await drainEventLoop();
+	t.is(pullResolvers.length, 2);
+
+	const [resolveSecondPull, resolveThirdPull] = pullResolvers;
+	resolveThirdPull({done: true, value: undefined});
+	await drainEventLoop();
+	resolveSecondPull({done: false, value: 1});
+
+	t.deepEqual(await iterator.next(), {done: false, value: 1});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` with pMapSkip', async t => {
+	const {mapper, release} = gatedMapper();
+
+	const iterator = pMapIterable([1, 2, 3, 4], async value => {
+		await mapper(value);
+		return value % 2 === 0 ? value : pMapSkip;
+	}, {concurrency: 4, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	release(3);
+	release(4);
+	t.deepEqual(await first, {done: false, value: 4});
+
+	release(1);
+	release(2);
+	t.deepEqual(await iterator.next(), {done: false, value: 2});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` stops pulling and closes the source when the consumer breaks', async t => {
+	let pulledCount = 0;
+	let isSourceClosed = false;
+
+	async function * source() {
+		try {
+			for (let index = 0; index < 100; index++) {
+				pulledCount++;
+				yield index;
+			}
+		} finally {
+			isSourceClosed = true;
+		}
+	}
+
+	for await (const value of pMapIterable(source(), async value => value, {concurrency: 2, preserveOrder: false})) { // eslint-disable-line no-unreachable-loop
+		t.is(value, 0);
+		break;
+	}
+
+	const pulledCountAtBreak = pulledCount;
+	await drainEventLoop();
+
+	t.true(isSourceClosed);
+	t.is(pulledCount, pulledCountAtBreak);
+});
+
+test('pMapIterable - `preserveOrder` defaults to `true`', async t => {
+	for (const options of [{concurrency: 3}, {concurrency: 3, preserveOrder: true}]) {
+		const {mapper, release} = gatedMapper();
+		const iterator = pMapIterable([0, 1, 2], mapper, options)[Symbol.asyncIterator]();
+		const first = iterator.next();
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		// The later elements settle first, and still come out after the first one.
+		release(2);
+		release(1);
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		release(0);
+
+		t.deepEqual(await first, {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+		t.deepEqual(await iterator.next(), {done: false, value: 1}); // eslint-disable-line no-await-in-loop
+		t.deepEqual(await iterator.next(), {done: false, value: 2}); // eslint-disable-line no-await-in-loop
+	}
+});
+
+test('pMapIterable - `preserveOrder: false` yields an input element that is a promise when it resolves', async t => {
+	let resolveFirst;
+	const firstElement = new Promise(resolve => {
+		resolveFirst = resolve;
+	});
+
+	const iterator = pMapIterable([firstElement, 'b'], async value => value, {concurrency: 2, preserveOrder: false})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 'b'});
+
+	resolveFirst('a');
+	t.deepEqual(await iterator.next(), {done: false, value: 'a'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` with an async source', async t => {
+	const {mapper, release} = gatedMapper();
+
+	async function * source() {
+		yield 'a';
+		yield 'b';
+		yield 'c';
+	}
+
+	const iterator = pMapIterable(source(), mapper, {concurrency: 3, preserveOrder: false})[Symbol.asyncIterator]();
+	const first = iterator.next();
+	await drainEventLoop();
+
+	release('b');
+	t.deepEqual(await first, {done: false, value: 'b'});
+
+	release('c');
+	t.deepEqual(await iterator.next(), {done: false, value: 'c'});
+
+	release('a');
+	t.deepEqual(await iterator.next(), {done: false, value: 'a'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` passes the input position as `index` for a source whose `next()` settles out of order', async t => {
+	const source = outOfOrderSource(['a', 'b', 'c', 'd'], [50, 5, 40, 5]);
+	const result = await collectAsyncIterable(pMapIterable(source, (value, index) => `${value}${index}`, {concurrency: 4, preserveOrder: false}));
+	t.deepEqual(result.sort(), ['a0', 'b1', 'c2', 'd3']);
+});
+
+test('pMapIterable - `preserveOrder: false` never runs more mappers at once than the concurrency limit', async t => {
+	const measurePeak = async limit => {
+		let running = 0;
+		let peak = 0;
+
+		const result = await collectAsyncIterable(pMapIterable(Array.from({length: 20}, (_, index) => index), async value => {
+			running++;
+			peak = Math.max(peak, running);
+			await delay(randomInt(0, 5));
+			running--;
+			return value;
+		}, {concurrency: limit, preserveOrder: false}));
+
+		t.deepEqual(result.sort((a, b) => a - b), Array.from({length: 20}, (_, index) => index));
+		return peak;
+	};
+
+	t.is(await measurePeak(1), 1);
+	t.is(await measurePeak(2), 2);
+	t.is(await measurePeak(4), 4);
+});
+
+test('pMapIterable - `preserveOrder: false` with `concurrency: 1` keeps the input order', async t => {
+	const result = await collectAsyncIterable(pMapIterable([30, 0, 20, 10], async value => {
+		await delay(value);
+		return value;
+	}, {concurrency: 1, preserveOrder: false}));
+
+	t.deepEqual(result, [30, 0, 20, 10]);
+});
+
+test('pMapIterable - `preserveOrder: false` yields a completed result before a synchronous source error', async t => {
+	function * source() {
+		yield 0;
+		throw new Error('source failed');
+	}
+
+	const iterator = pMapIterable(source(), value => value, {concurrency: 1, backpressure: 2, preserveOrder: false})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	await t.throwsAsync(iterator.next(), {message: 'source failed'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` throws a source error while an earlier element is pending', async t => {
+	const {mapper} = gatedMapper();
+
+	async function * source() {
+		yield 0;
+		throw new Error('source failed');
+	}
+
+	const iterator = pMapIterable(source(), mapper, {concurrency: 2, preserveOrder: false})[Symbol.asyncIterator]();
+	await t.throwsAsync(iterator.next(), {message: 'source failed'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` yields the results that settled before a mapper throws', async t => {
+	const {mapper, release} = gatedMapper();
+
+	const iterator = pMapIterable([0, 1, 2], async value => {
+		await mapper(value);
+
+		if (value === 2) {
+			throw new Error('foo');
+		}
+
+		return value;
+	}, {concurrency: 3, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	release(1);
+	t.deepEqual(await first, {done: false, value: 1});
+
+	release(2);
+	await t.throwsAsync(iterator.next(), {message: 'foo'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` does not call the mapper for input that arrives after a mapper throws', async t => {
+	const {mapper, release} = gatedMapper();
+	let sourcePulls = 0;
+
+	const source = {
+		[Symbol.iterator]() {
+			return {
+				next() {
+					return {done: false, value: sourcePulls++};
+				},
+			};
+		},
+	};
+
+	const mapped = [];
+	const iterator = pMapIterable(source, value => {
+		mapped.push(value);
+
+		if (value === 1) {
+			throw new Error('foo');
+		}
+
+		return mapper(value);
+	}, {concurrency: 2, preserveOrder: false})[Symbol.asyncIterator]();
+
+	await t.throwsAsync(iterator.next(), {message: 'foo'});
+	const sourcePullsAfterError = sourcePulls;
+
+	// Freeing the held worker must not start another pull or mapper.
+	release(0);
+	await drainEventLoop();
+
+	t.deepEqual(mapped, [0, 1]);
+	t.is(sourcePulls, sourcePullsAfterError);
+});
+
+test.serial('pMapIterable - `preserveOrder: false` has no unhandled rejection when several mappers throw', async t => {
+	const unhandledRejections = [];
+	const onUnhandledRejection = error => {
+		unhandledRejections.push(error);
+	};
+
+	process.on('unhandledRejection', onUnhandledRejection);
+
+	try {
+		await t.throwsAsync(collectAsyncIterable(pMapIterable([0, 1, 2], async value => {
+			await delay(value);
+			throw new Error(`foo${value}`);
+		}, {concurrency: 3, preserveOrder: false})), {message: 'foo0'});
+
+		// Give the other mappers time to reject.
+		await delay(50);
+	} finally {
+		process.off('unhandledRejection', onUnhandledRejection);
+	}
+
+	t.deepEqual(unhandledRejections, []);
+});
+
+test('pMapIterable - `preserveOrder: false` stops at once when `return()` is called while an earlier element is pending', async t => {
+	const {mapper, release} = gatedMapper();
+	let sourcePulls = 0;
+	let isSourceClosed = false;
+
+	const source = {
+		[Symbol.iterator]() {
+			return {
+				next() {
+					return {done: false, value: sourcePulls++};
+				},
+				return() {
+					isSourceClosed = true;
+					return {done: true};
+				},
+			};
+		},
+	};
+
+	const mapped = [];
+	const iterator = pMapIterable(source, value => {
+		mapped.push(value);
+		return value === 0 ? mapper(value) : value;
+	}, {concurrency: 2, preserveOrder: false})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 1});
+
+	// The first element is still held, and stopping must not wait for it.
+	t.deepEqual(await iterator.return(), {done: true, value: undefined});
+	t.true(isSourceClosed);
+
+	const mappedAfterReturn = mapped.length;
+	const sourcePullsAfterReturn = sourcePulls;
+	release(0);
+	await drainEventLoop();
+
+	t.is(mapped.length, mappedAfterReturn);
+	t.is(sourcePulls, sourcePullsAfterReturn);
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - `preserveOrder: false` reads as far ahead as with `preserveOrder`', async t => {
+	const startedCount = async preserveOrder => {
+		let started = 0;
+		const iterator = pMapIterable(Array.from({length: 20}, (_, index) => index), async value => {
+			started++;
+			return value;
+		}, {concurrency: 1, backpressure: 3, preserveOrder})[Symbol.asyncIterator]();
+
+		await iterator.next();
+		await drainEventLoop();
+		await iterator.return();
+		return started;
+	};
+
+	const ordered = await startedCount(true);
+	const unordered = await startedCount(false);
+
+	// One result taken, plus `backpressure` results waiting for the consumer.
+	t.is(ordered, 4);
+	t.is(unordered, ordered);
+});
+
+test('pMapIterable - `preserveOrder: false` with an empty input or only skipped results', async t => {
+	t.deepEqual(await collectAsyncIterable(pMapIterable([], async value => value, {preserveOrder: false})), []);
+	t.deepEqual(await collectAsyncIterable(pMapIterable([1, 2, 3], async () => pMapSkip, {concurrency: 2, preserveOrder: false})), []);
+});
+
+test('pMapIterable - `preserveOrder: false` yields falsy results', async t => {
+	const values = [undefined, null, 0, false, ''];
+	const result = await collectAsyncIterable(pMapIterable(values.keys(), async index => values[index], {concurrency: 2, preserveOrder: false}));
+	t.is(result.length, values.length);
+
+	for (const value of values) {
+		t.true(result.includes(value));
+	}
+});
+
+test('pMapIterable - `preserveOrder: false` yields every result exactly once under random timing', async t => {
+	const length = 300;
+	const input = Array.from({length}, (_, index) => index);
+
+	const result = await collectAsyncIterable(pMapIterable(input, async value => {
+		await delay(randomInt(0, 5));
+		return value % 7 === 0 ? pMapSkip : value;
+	}, {concurrency: 8, backpressure: 16, preserveOrder: false}));
+
+	t.deepEqual(result.sort((a, b) => a - b), input.filter(value => value % 7 !== 0));
+});
+
+test('pMapIterable - `preserveOrder: false` gives each iteration its own state', async t => {
+	const input = Array.from({length: 20}, (_, index) => index);
+	const iterable = pMapIterable(input, async value => {
+		await delay(randomInt(0, 5));
+		return value;
+	}, {concurrency: 4, preserveOrder: false});
+
+	const [first, second] = await Promise.all([collectAsyncIterable(iterable), collectAsyncIterable(iterable)]);
+	t.deepEqual(first.sort((a, b) => a - b), input);
+	t.deepEqual(second.sort((a, b) => a - b), input);
+});
+
+test('pMapIterable - `preserveOrder: false` stages can be chained', async t => {
+	const input = Array.from({length: 20}, (_, index) => index);
+
+	const doubled = pMapIterable(input, async value => {
+		await delay(randomInt(0, 5));
+		return value * 2;
+	}, {concurrency: 4, preserveOrder: false});
+
+	const result = await collectAsyncIterable(pMapIterable(doubled, async value => {
+		await delay(randomInt(0, 5));
+		return value + 1;
+	}, {concurrency: 4, preserveOrder: false}));
+
+	t.deepEqual(result.sort((a, b) => a - b), input.map(value => (value * 2) + 1));
 });
 
 test('pMapIterable - the iterator it hands out can be consumed with `for await`', async t => {

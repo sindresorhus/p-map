@@ -222,6 +222,7 @@ export function pMapIterable(
 	{
 		concurrency = Number.POSITIVE_INFINITY,
 		backpressure = concurrency,
+		preserveOrder = true,
 	} = {},
 ) {
 	validateOptions(iterable, mapper, concurrency);
@@ -250,6 +251,19 @@ export function pMapIterable(
 				let isIterableDone = false;
 				let index = 0;
 
+				// Without `preserveOrder`, each spawn still takes a slot in `promises`, so `backpressure` counts the same, but the slots are filled in the order the workers settle rather than the order they were spawned in, so the consumer gets whichever result is ready first. A worker always fills the oldest empty slot, so the resolvers are used in spawn order.
+				const slotResolvers = new Map();
+				let slotCount = 0;
+				let filledSlotCount = 0;
+
+				// The indexes of the pulls whose worker has not filled a slot yet, without `preserveOrder`.
+				const unfilledIndexes = new Set();
+
+				const fillSlot = result => {
+					slotResolvers.get(filledSlotCount)(result);
+					slotResolvers.delete(filledSlotCount++);
+				};
+
 				const pull = createPuller(iterator);
 
 				function trySpawn() {
@@ -261,13 +275,14 @@ export function pMapIterable(
 
 					pendingPromisesCount++;
 
+					// Take the index when the pull starts, not when it resolves, so a source that
+					// settles its `next()` calls out of call order still gets the right position.
+					const currentIndex = index++;
+
 					// Errors must be returned as a value instead of rejecting, otherwise a promise that
 					// the consumer abandons after an earlier error becomes an unhandled rejection.
 					const promise = (async () => {
 						try {
-							// Take the index when the pull starts, not when it resolves, so a source that
-							// settles its `next()` calls out of call order still gets the right position.
-							const currentIndex = index++;
 							const {done, value} = await pull();
 
 							if (done) {
@@ -291,9 +306,6 @@ export function pMapIterable(
 
 							pendingPromisesCount--;
 
-							// Spawn if still below backpressure limit and just dropped below concurrency limit
-							trySpawn();
-
 							return {done: false, value: returnValue};
 						} catch (error) {
 							pendingPromisesCount--;
@@ -302,7 +314,41 @@ export function pMapIterable(
 						}
 					})();
 
-					promises.push(promise);
+					if (preserveOrder) {
+						promises.push(promise);
+						promise.then(() => {
+							// Spawn if still below backpressure limit and just dropped below concurrency limit
+							trySpawn();
+						});
+						return;
+					}
+
+					promises.push(new Promise(resolve => {
+						slotResolvers.set(slotCount++, resolve);
+					}));
+
+					unfilledIndexes.add(currentIndex);
+
+					// The worker never rejects, as errors are returned as a value.
+					promise.then(result => {
+						// The slot was already given back, as the pull came after the end of the source.
+						if (!unfilledIndexes.delete(currentIndex)) {
+							return;
+						}
+
+						if (result.done) {
+							// The pulls made after this one came after the end of the source, and a source like a queue may never answer them, so give their slots back now instead of waiting on them.
+							for (const unfilledIndex of unfilledIndexes) {
+								if (unfilledIndex > currentIndex) {
+									unfilledIndexes.delete(unfilledIndex);
+									fillSlot({done: true});
+								}
+							}
+						}
+
+						fillSlot(result);
+						trySpawn();
+					});
 				}
 
 				trySpawn();
@@ -330,7 +376,12 @@ export function pMapIterable(
 						}
 
 						if (done) {
-							return;
+							// Without `preserveOrder`, the `done` can arrive while other workers are still running.
+							if (preserveOrder) {
+								return;
+							}
+
+							continue;
 						}
 
 						// Spawn if just dropped below backpressure limit and below the concurrency limit

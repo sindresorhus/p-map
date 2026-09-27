@@ -96,8 +96,11 @@ expectType<Promise<number[]>>(pMap(sitesAsyncIterableWithPromises, async (site: 
 // A mapper that always returns pMapSkip.
 expectType<Promise<string[]>>(pMap(sites, async site => (site.length > 0 ? pMapSkip : site)));
 
-// `backpressure` is pMapIterable only.
+// `backpressure` and `preserveOrder` are pMapIterable only.
 expectError(pMap(sites, asyncMapper, {backpressure: 2}));
+expectError(pMap(sites, asyncMapper, {preserveOrder: false}));
+expectType<AsyncIterable<string>>(pMapIterable(sites, asyncMapper, {preserveOrder: false}));
+expectError(pMapIterable(sites, asyncMapper, {preserveOrder: 'false'}));
 
 // `stopOnError` and `signal` are pMap only.
 expectError(pMapIterable(sites, asyncMapper, {stopOnError: false}));

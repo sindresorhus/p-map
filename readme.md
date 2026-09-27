@@ -43,7 +43,7 @@ Returns a `Promise` that is fulfilled when all promises in `input` and the ones 
 
 ### pMapIterable(input, mapper, options?)
 
-Returns an async iterable that streams each return value from `mapper` in order.
+Returns an async iterable that streams each return value from `mapper` in order, or as soon as each is ready when [`preserveOrder`](#preserveorder) is `false`.
 
 ```js
 import {pMapIterable} from 'p-map';
@@ -99,6 +99,28 @@ A result of `pMapSkip` is collected by the consumer stepping over it, so it coun
 
 > [!NOTE]
 > `backpressure` defaults to `concurrency`, which defaults to `Infinity`, so nothing bounds the read-ahead by default. A source that never ends is then read without limit until memory runs out. Give such a source a finite `concurrency`. That also bounds `backpressure`, since it defaults to `concurrency`.
+
+##### preserveOrder
+
+**Only for `pMapIterable`**
+
+Type: `boolean`\
+Default: `true`
+
+Whether to yield the results in `input` order.
+
+When `false`, each result is yielded as soon as it is ready. A slow element then no longer holds back the results after it, and those results no longer fill up `backpressure` while they wait, so `mapper` keeps running at full `concurrency`. Use it when the order of the results does not matter.
+
+An error from `mapper` is then also thrown as soon as it happens, instead of after the results before it. The `index` passed to `mapper` is still the position in `input`.
+
+```js
+import {pMapIterable} from 'p-map';
+
+// Each page is saved as soon as it is downloaded, without waiting for slower pages before it
+for await (const page of pMapIterable(urls, downloadPage, {concurrency: 8, preserveOrder: false})) {
+	await savePage(page);
+}
+```
 
 ##### stopOnError
 
