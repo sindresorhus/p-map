@@ -5,7 +5,7 @@ import delay from 'delay';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
 import assertInRange from './assert-in-range.js';
-import pMap, {pMapIterable, pMapSkip} from './index.js';
+import pMap, {pMapIterable, pMapSkip, pMapStop} from './index.js';
 
 const sharedInput = [
 	[async () => 10, 300],
@@ -2742,19 +2742,30 @@ test('pMapIterable - does not call the mapper for input that arrives after `retu
 	t.deepEqual(mappedValues, [0]);
 });
 
-test('pMapIterable - drops pending earlier input when a later mapper throws', async t => {
+// Like a loop, the results before an error still come first, so the pending earlier input is still mapped.
+test('pMapIterable - maps pending earlier input when a later mapper throws, and yields it before the error', async t => {
 	let release;
 	const gate = new Promise(resolve => {
 		release = resolve;
 	});
 
 	const mappedValues = [];
+	const values = [];
 	const input = [gate.then(() => 0), 1];
 
-	const promise = t.throwsAsync(collectAsyncIterable(pMapIterable(input, async value => {
-		mappedValues.push(value);
-		throw new Error(`mapper error ${value}`);
-	}, {concurrency: 2})));
+	const promise = t.throwsAsync((async () => {
+		for await (const value of pMapIterable(input, async value => {
+			mappedValues.push(value);
+
+			if (value === 1) {
+				throw new Error('mapper error 1');
+			}
+
+			return value;
+		}, {concurrency: 2})) {
+			values.push(value);
+		}
+	})());
 
 	await delay(10);
 	t.deepEqual(mappedValues, [1]);
@@ -2762,7 +2773,156 @@ test('pMapIterable - drops pending earlier input when a later mapper throws', as
 	release();
 	const error = await promise;
 	t.is(error.message, 'mapper error 1');
-	t.deepEqual(mappedValues, [1]);
+	t.deepEqual(mappedValues, [1, 0]);
+	t.deepEqual(values, [0]);
+});
+
+test('pMapIterable - the first error in input order wins, even when a later one settles first', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	const promise = t.throwsAsync(collectAsyncIterable(pMapIterable([gate.then(() => 0), 1], async value => {
+		throw new Error(`mapper error ${value}`);
+	}, {concurrency: 2})));
+
+	await delay(10);
+	release();
+	const error = await promise;
+	t.is(error.message, 'mapper error 0');
+});
+
+test('pMapIterable - does not leave a gap for pending earlier input when a later mapper throws', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	const values = [];
+
+	await t.throwsAsync((async () => {
+		for await (const value of pMapIterable([0, gate.then(() => 1), 2, 3], async value => {
+			if (value === 3) {
+				setTimeout(release);
+				throw new Error('mapper error 3');
+			}
+
+			return value;
+		})) {
+			values.push(value);
+		}
+	})(), {message: 'mapper error 3'});
+
+	t.deepEqual(values, [0, 1, 2]);
+});
+
+test('pMapIterable - a mapper error stops pulling and mapping past it, but still maps the pending earlier input', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	let pulls = 0;
+	const source = {
+		[Symbol.iterator]() {
+			return {
+				next() {
+					const pullIndex = pulls++;
+					return {done: false, value: pullIndex === 0 || pullIndex === 2 ? gate.then(() => pullIndex) : pullIndex};
+				},
+			};
+		},
+	};
+
+	const mappedValues = [];
+
+	await t.throwsAsync(collectAsyncIterable(pMapIterable(source, async value => {
+		mappedValues.push(value);
+
+		if (value === 1) {
+			setTimeout(release);
+			throw new Error('mapper error 1');
+		}
+
+		return value;
+	}, {concurrency: 3, backpressure: 10})), {message: 'mapper error 1'});
+
+	t.deepEqual(mappedValues, [1, 0]);
+	t.is(pulls, 3);
+});
+
+test('pMapIterable - with `preserveOrder: false`, a mapper error drops pending input while the consumer is busy', async t => {
+	let releaseElement;
+	const elementGate = new Promise(resolve => {
+		releaseElement = resolve;
+	});
+
+	let releaseConsumer;
+	const consumerGate = new Promise(resolve => {
+		releaseConsumer = resolve;
+	});
+
+	const mappedValues = [];
+
+	await t.throwsAsync((async () => {
+		for await (const value of pMapIterable(['a', elementGate.then(() => 'pending'), 'throw'], async value => {
+			mappedValues.push(value);
+
+			if (value === 'throw') {
+				// Throw only after the consumer got the first result, so it is busy when the error settles.
+				await delay(0);
+				setTimeout(releaseElement);
+				throw new Error('mapper error');
+			}
+
+			return value;
+		}, {preserveOrder: false})) {
+			t.is(value, 'a');
+
+			// Stay busy until the pending input has arrived, so only the error can keep it from being mapped.
+			setTimeout(releaseConsumer, 20);
+			await consumerGate;
+		}
+	})(), {message: 'mapper error'});
+
+	t.deepEqual(mappedValues, ['a', 'throw']);
+});
+
+test('pMapIterable - yields pending earlier input before a source error, and does not pull again', async t => {
+	let release;
+	const gate = new Promise(resolve => {
+		release = resolve;
+	});
+
+	let pulls = 0;
+	const source = {
+		[Symbol.iterator]() {
+			return {
+				next() {
+					pulls++;
+
+					if (pulls === 1) {
+						return {done: false, value: gate.then(() => 0)};
+					}
+
+					setTimeout(release);
+					throw new Error('source error');
+				},
+			};
+		},
+	};
+
+	const values = [];
+
+	await t.throwsAsync((async () => {
+		for await (const value of pMapIterable(source, async value => value, {concurrency: 3})) {
+			values.push(value);
+		}
+	})(), {message: 'source error'});
+
+	t.deepEqual(values, [0]);
+	t.is(pulls, 2);
 });
 
 test('pMapIterable - closes the source iterator when the consumer breaks', async t => {
@@ -3257,4 +3417,698 @@ test('pMapIterable - does not call `next()` on an exhausted source iterator when
 	}, {concurrency: 2, backpressure: 4})), [1, 3]);
 	await delay(10);
 	t.is(source.nextCallsAfterDone, 0);
+});
+
+// An endless source that counts its pulls and its `return()` calls.
+function countingSource({isAsync = false} = {}) {
+	const source = {
+		pulls: 0,
+		returnCalls: 0,
+		[isAsync ? Symbol.asyncIterator : Symbol.iterator]() {
+			return {
+				next() {
+					const result = {done: false, value: source.pulls++};
+					return isAsync ? Promise.resolve(result) : result;
+				},
+				return() {
+					source.returnCalls++;
+					const result = {done: true, value: undefined};
+					return isAsync ? Promise.resolve(result) : result;
+				},
+			};
+		},
+	};
+
+	return source;
+}
+
+test('pMapStop - resolves with the results before the stop', async t => {
+	const result = await pMap([1, 2, 3, 4, 5, 6], async value => {
+		await delay(10);
+		return value === 4 ? pMapStop : value;
+	}, {concurrency: 2});
+
+	t.deepEqual(result, [1, 2, 3]);
+	t.is(result.length, Object.keys(result).length);
+});
+
+test('pMapStop - drops the later results that finished first, and waits for the earlier ones', async t => {
+	const result = await pMap([1, 2, 3, 4, 5], async value => {
+		await delay(value === 1 ? 50 : 10);
+		return value === 3 ? pMapStop : value;
+	});
+
+	t.deepEqual(result, [1, 2]);
+	t.is(result.length, Object.keys(result).length);
+});
+
+test('pMapStop - at the first element', async t => {
+	t.deepEqual(await pMap([1, 2, 3], async value => (value === 1 ? pMapStop : value)), []);
+});
+
+for (const stopOnError of [true, false]) {
+	test.serial(`pMapStop - handles a discarded input rejection with stopOnError: ${stopOnError}`, async t => {
+		t.timeout(1000);
+
+		let rejectLaterElement;
+		const laterElement = new Promise((resolve, reject) => {
+			rejectLaterElement = reject;
+		});
+
+		const mappedValues = [];
+		const unhandledRejections = [];
+		const onUnhandledRejection = error => {
+			unhandledRejections.push(error);
+		};
+
+		process.on('unhandledRejection', onUnhandledRejection);
+
+		try {
+			t.deepEqual(await pMap([0, laterElement], value => {
+				mappedValues.push(value);
+				return pMapStop;
+			}, {concurrency: 2, stopOnError}), []);
+
+			// The stop must settle before the discarded input does.
+			rejectLaterElement(new Error('after the stop'));
+			await delay(0);
+		} finally {
+			process.off('unhandledRejection', onUnhandledRejection);
+		}
+
+		t.deepEqual(mappedValues, [0]);
+		t.deepEqual(unhandledRejections, []);
+	});
+}
+
+test('pMapStop - at the last element', async t => {
+	t.deepEqual(await pMap([1, 2, 3, pMapStop], async value => value), [1, 2, 3]);
+});
+
+test('pMapStop - does not wait for the mappers of later elements', async t => {
+	let isSlowMapperDone = false;
+
+	const result = await pMap([1, 2, 3], async value => {
+		if (value === 3) {
+			await delay(100);
+			isSlowMapperDone = true;
+			return value;
+		}
+
+		return value === 2 ? pMapStop : value;
+	});
+
+	t.deepEqual(result, [1]);
+	t.false(isSlowMapperDone);
+});
+
+test('pMapStop - the lowest index wins, whatever order the stops settle in', async t => {
+	const result = await pMap([1, 2, 3, 4, 5], async value => {
+		if (value === 2) {
+			await delay(50);
+			return pMapStop;
+		}
+
+		return value === 4 ? pMapStop : value;
+	});
+
+	t.deepEqual(result, [1]);
+});
+
+test('pMapStop - an error before the stop rejects', async t => {
+	await t.throwsAsync(pMap([1, 2, 3], async value => {
+		if (value === 1) {
+			await delay(20);
+			throw new Error('before');
+		}
+
+		return value === 2 ? pMapStop : value;
+	}), {message: 'before'});
+});
+
+test('pMapStop - an error after the stop is ignored', async t => {
+	let releaseFirstElement;
+	const firstElementGate = new Promise(resolve => {
+		releaseFirstElement = resolve;
+	});
+
+	let releaseError;
+	const errorGate = new Promise(resolve => {
+		releaseError = resolve;
+	});
+
+	// The stop lands while the first element is still running, and the error lands after the stop.
+	t.deepEqual(await pMap([1, 2, 3], async value => {
+		if (value === 1) {
+			await firstElementGate;
+			return value;
+		}
+
+		if (value === 2) {
+			// Let every element be pulled first.
+			await delay(5);
+			setTimeout(releaseError);
+			return pMapStop;
+		}
+
+		await errorGate;
+		setTimeout(releaseFirstElement);
+		throw new Error('after');
+	}), [1]);
+});
+
+test('pMapStop - `stopOnError: false` collects only the errors before the stop', async t => {
+	const error = await t.throwsAsync(pMap([1, 2, 3, 4], async value => {
+		if (value === 1) {
+			throw new Error('before');
+		}
+
+		if (value === 4) {
+			throw new Error('after');
+		}
+
+		if (value === 3) {
+			// The later error settles first, before the stop is known.
+			await delay(10);
+			return pMapStop;
+		}
+
+		return value;
+	}, {stopOnError: false}), {instanceOf: AggregateError});
+
+	t.deepEqual(error.errors.map(({message}) => message), ['before']);
+});
+
+test('pMapStop - ends an endless sync source with the default concurrency', async t => {
+	const source = countingSource();
+
+	t.deepEqual(await pMap(source, async value => (value === 3 ? pMapStop : value)), [0, 1, 2]);
+
+	const {pulls} = source;
+	t.true(pulls < 20, `pulled ${pulls} items`);
+	t.is(source.returnCalls, 1);
+
+	await delay(20);
+	t.is(source.pulls, pulls);
+});
+
+test('pMapStop - stops pulling from an async source and closes it', async t => {
+	const source = countingSource({isAsync: true});
+
+	// The second element finishes after the stop while the first one is still running, so its worker would pull again.
+	t.deepEqual(await pMap(source, async value => {
+		if (value !== 2) {
+			await delay([50, 20][value]);
+		}
+
+		return value === 2 ? pMapStop : value;
+	}, {concurrency: 3}), [0, 1]);
+
+	t.is(source.pulls, 3);
+	t.is(source.returnCalls, 1);
+
+	await delay(30);
+	t.is(source.pulls, 3);
+});
+
+test('pMapStop - does not map a later element that resolves after the stop', async t => {
+	const mappedValues = [];
+
+	let releaseLaterElement;
+	const laterElement = new Promise(resolve => {
+		releaseLaterElement = resolve;
+	});
+
+	let releaseFirstElement;
+	const firstElement = new Promise(resolve => {
+		releaseFirstElement = resolve;
+	});
+
+	const result = await pMap([firstElement, 2, laterElement], async value => {
+		mappedValues.push(value);
+
+		if (value === 2) {
+			// Let every element be pulled first.
+			await delay(5);
+
+			// Resolve the later element only after the stop, and the first one only after that, so the result cannot settle before the later element is seen.
+			setTimeout(() => {
+				releaseLaterElement(3);
+				setTimeout(() => {
+					releaseFirstElement(1);
+				});
+			});
+			return pMapStop;
+		}
+
+		return value;
+	});
+
+	t.deepEqual(result, [1]);
+	t.deepEqual(mappedValues, [2, 1]);
+});
+
+test('pMapStop - with `pMapSkip` before it', async t => {
+	t.deepEqual(await pMap([1, pMapSkip, 3, pMapStop, 5], async value => value), [1, 3]);
+});
+
+test('pMapStop - a mapper that returns a promise of `pMapStop`', async t => {
+	t.deepEqual(await pMap([1, 2, 3], value => (value === 2 ? Promise.resolve(pMapStop) : value)), [1]);
+});
+
+test('pMapStop - an input element that resolves to `pMapStop` is still passed to the mapper', async t => {
+	const result = await pMap([Promise.resolve(pMapStop), 2], async value => (value === pMapStop ? 'kept' : value));
+	t.deepEqual(result, ['kept', 2]);
+});
+
+test('pMapStop - from a synchronous mapper that uses the index', async t => {
+	t.deepEqual(await pMap(['a', 'b', 'c', 'd'], (value, index) => (index === 2 ? pMapStop : `${value}${index}`)), ['a0', 'b1']);
+});
+
+test('pMapStop - does not close a source that is already done', async t => {
+	let returnCalls = 0;
+
+	const source = {
+		[Symbol.iterator]() {
+			const iterator = [1, 2, 3][Symbol.iterator]();
+
+			return {
+				next: () => iterator.next(),
+				return() {
+					returnCalls++;
+					return {done: true};
+				},
+			};
+		},
+	};
+
+	t.deepEqual(await pMap(source, async value => {
+		if (value === 3) {
+			await delay(10);
+			return pMapStop;
+		}
+
+		return value;
+	}), [1, 2]);
+
+	t.is(returnCalls, 0);
+});
+
+test('pMapStop - closes the source once when several elements stop', async t => {
+	const source = countingSource();
+
+	t.deepEqual(await pMap(source, async value => {
+		if (value === 1) {
+			await delay(20);
+			return pMapStop;
+		}
+
+		return value === 3 ? pMapStop : value;
+	}, {concurrency: 4}), [0]);
+
+	t.is(source.returnCalls, 1);
+});
+
+test('pMapStop - a stop after a rejection does not close the source again', async t => {
+	const source = countingSource();
+
+	await t.throwsAsync(pMap(source, async value => {
+		if (value === 0) {
+			await delay(10);
+			throw new Error('before');
+		}
+
+		await delay(30);
+		return pMapStop;
+	}, {concurrency: 2}), {message: 'before'});
+
+	await delay(40);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMapStop - aborting while an earlier element is still running rejects and closes the source once', async t => {
+	const source = countingSource();
+	const abortController = new AbortController();
+
+	let releaseFirstElement;
+	const firstElementGate = new Promise(resolve => {
+		releaseFirstElement = resolve;
+	});
+
+	const promise = pMap(source, async value => {
+		if (value === 0) {
+			await firstElementGate;
+			return value;
+		}
+
+		return value === 1 ? pMapStop : value;
+	}, {concurrency: 2, signal: abortController.signal});
+
+	await delay(10);
+	t.is(source.returnCalls, 0);
+	abortController.abort(new Error('aborted'));
+
+	await t.throwsAsync(promise, {message: 'aborted'});
+	t.is(source.returnCalls, 1);
+	t.is(abortListenerCount(abortController.signal), 0);
+
+	// The first element finishing after the abort must not close the source again.
+	releaseFirstElement();
+	await delay(10);
+	t.is(source.returnCalls, 1);
+});
+
+// A source whose `return()` settles its pending `next()` calls with `done`, like `events.on()` does. A stop must not close it while an earlier pull is still pending, or that element is lost.
+test('pMapStop - waits for an earlier pull that settles after the stop before it closes the source', async t => {
+	const pendingPulls = new Set();
+	let pullCount = 0;
+	let releaseSecondPull;
+
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					const pullIndex = pullCount++;
+
+					// The second pull stays pending until the stop has happened, so it settles out of call order.
+					if (pullIndex !== 1) {
+						return Promise.resolve({done: false, value: pullIndex});
+					}
+
+					return new Promise(resolve => {
+						pendingPulls.add(resolve);
+
+						releaseSecondPull = () => {
+							if (pendingPulls.delete(resolve)) {
+								resolve({done: false, value: pullIndex});
+							}
+						};
+					});
+				},
+				async return() {
+					for (const resolve of pendingPulls) {
+						resolve({done: true});
+					}
+
+					pendingPulls.clear();
+					return {done: true};
+				},
+			};
+		},
+	};
+
+	t.deepEqual(await pMap(source, async value => {
+		if (value === 2) {
+			setTimeout(releaseSecondPull, 10);
+			return pMapStop;
+		}
+
+		return value;
+	}, {concurrency: 3}), [0, 1]);
+});
+
+test('pMapIterable - pMapStop ends the stream after the earlier results', async t => {
+	const result = await collectAsyncIterable(pMapIterable([1, 2, 3, 4, 5], async value => {
+		await delay(value === 1 ? 30 : 0);
+		return value === 3 ? pMapStop : value;
+	}));
+
+	t.deepEqual(result, [1, 2]);
+});
+
+test('pMapIterable - pMapStop with `preserveOrder: false` ends the stream after the results that were ready before it', async t => {
+	// The mappers of the first and the last element never finish, so the stream cannot wait for them.
+	const result = await collectAsyncIterable(pMapIterable([1, 2, 3, 4], async value => {
+		if (value === 1 || value === 4) {
+			await new Promise(() => {});
+		}
+
+		if (value === 3) {
+			await delay(10);
+			return pMapStop;
+		}
+
+		return value;
+	}, {preserveOrder: false}));
+
+	t.deepEqual(result, [2]);
+});
+
+test('pMapIterable - pMapStop stops pulling and closes the source', async t => {
+	const source = countingSource();
+
+	// The consumer is still waiting on the first element after the stop, so the worker that stopped is free to spawn again.
+	t.deepEqual(await collectAsyncIterable(pMapIterable(source, async value => {
+		if (value === 0) {
+			await delay(30);
+		}
+
+		return value === 1 ? pMapStop : value;
+	}, {concurrency: 2, backpressure: 10})), [0]);
+
+	t.is(source.pulls, 2);
+	t.is(source.returnCalls, 1);
+
+	await delay(30);
+	t.is(source.pulls, 2);
+});
+
+// The consumer is still waiting on the first element when the stop happens, so the stop itself has to keep the later element from being mapped, without dropping the earlier one.
+test('pMapIterable - pMapStop maps an earlier element that resolves after the stop, but not a later one', async t => {
+	const mappedValues = [];
+
+	const result = await collectAsyncIterable(pMapIterable([delay(50).then(() => 1), 2, delay(20).then(() => 3)], async value => {
+		mappedValues.push(value);
+		return value === 2 ? pMapStop : value;
+	}));
+
+	t.deepEqual(result, [1]);
+	t.deepEqual(mappedValues, [2, 1]);
+});
+
+test('pMapIterable - pMapStop agrees with pMap', async t => {
+	const input = [1, 2, pMapSkip, 4, pMapStop, 6, 7];
+	const mapper = async value => {
+		await delay(randomInt(0, 10));
+		return value;
+	};
+
+	const expected = [1, 2, 4];
+	t.deepEqual(await pMap(input, mapper, {concurrency: 3}), expected);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(input, mapper, {concurrency: 3})), expected);
+});
+
+test('pMapIterable - pMapStop ignores an error after the stop, and keeps an earlier element that is still pending', async t => {
+	const result = await collectAsyncIterable(pMapIterable([delay(50).then(() => 1), 2, 3], async value => {
+		if (value === 3) {
+			await delay(5);
+			throw new Error('after');
+		}
+
+		return value === 2 ? pMapStop : value;
+	}));
+
+	t.deepEqual(result, [1]);
+});
+
+test('pMapIterable - pMapStop ignores an input element that rejects after the stop', async t => {
+	const result = await collectAsyncIterable(pMapIterable([delay(50).then(() => 1), 2, delay(20).then(() => {
+		throw new Error('after');
+	})], async value => (value === 2 ? pMapStop : value)));
+
+	t.deepEqual(result, [1]);
+});
+
+test('pMapIterable - pMapStop with `preserveOrder: false` stops pulling and closes the source', async t => {
+	const source = countingSource();
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(source, async value => {
+		if (value === 0) {
+			await delay(30);
+		}
+
+		return value === 1 ? pMapStop : value;
+	}, {concurrency: 2, backpressure: 10, preserveOrder: false})), []);
+
+	t.is(source.pulls, 2);
+	t.is(source.returnCalls, 1);
+
+	await delay(40);
+	t.is(source.pulls, 2);
+});
+
+test('pMapIterable - pMapStop with `preserveOrder: false` stops pulling while the consumer is busy', async t => {
+	const source = countingSource();
+	const values = [];
+
+	for await (const value of pMapIterable(source, async value => {
+		await delay(value === 0 ? 0 : 10);
+		return value === 1 ? pMapStop : value;
+	}, {concurrency: 1, backpressure: 10, preserveOrder: false})) {
+		values.push(value);
+		await delay(50);
+	}
+
+	t.deepEqual(values, [0]);
+	t.is(source.pulls, 2);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMapIterable - pMapStop stops pulling from an async source and closes it', async t => {
+	const source = countingSource({isAsync: true});
+
+	t.deepEqual(await collectAsyncIterable(pMapIterable(source, async value => {
+		if (value === 0) {
+			await delay(30);
+		}
+
+		return value === 1 ? pMapStop : value;
+	}, {concurrency: 2, backpressure: 10})), [0]);
+
+	t.is(source.pulls, 2);
+	t.is(source.returnCalls, 1);
+
+	await delay(30);
+	t.is(source.pulls, 2);
+});
+
+test('pMapIterable - pMapStop, the lowest index wins when a later stop settles last', async t => {
+	const mappedValues = [];
+
+	let releaseLaterStop;
+	const laterStopGate = new Promise(resolve => {
+		releaseLaterStop = resolve;
+	});
+
+	let releasePendingElements;
+	const pendingElements = new Promise(resolve => {
+		releasePendingElements = resolve;
+	});
+
+	const result = await collectAsyncIterable(pMapIterable([pendingElements.then(() => 0), 1, pendingElements.then(() => 2), 3], async value => {
+		mappedValues.push(value);
+
+		if (value === 1) {
+			// Let every element be pulled first.
+			await delay(5);
+			setTimeout(releaseLaterStop);
+			return pMapStop;
+		}
+
+		if (value === 3) {
+			await laterStopGate;
+
+			// The pending elements resolve only once both stops have landed.
+			setTimeout(releasePendingElements);
+			return pMapStop;
+		}
+
+		return value;
+	}));
+
+	t.deepEqual(result, [0]);
+	t.deepEqual(mappedValues, [1, 3, 0]);
+});
+
+test('pMapIterable - pMapStop ignores an error from a later element, even when it lands before the stop', async t => {
+	const mappedValues = [];
+
+	let releaseStop;
+	const stopGate = new Promise(resolve => {
+		releaseStop = resolve;
+	});
+
+	let releaseFirstElement;
+	const firstElement = new Promise(resolve => {
+		releaseFirstElement = resolve;
+	});
+
+	const result = await collectAsyncIterable(pMapIterable([firstElement, 2, 3], async value => {
+		mappedValues.push(value);
+
+		if (value === 1) {
+			return value;
+		}
+
+		if (value === 2) {
+			await stopGate;
+			setTimeout(() => {
+				releaseFirstElement(1);
+			});
+			return pMapStop;
+		}
+
+		// Let every element be pulled first.
+		await delay(5);
+		setTimeout(releaseStop);
+		throw new Error('after');
+	}));
+
+	// Like a loop, which would stop before it ever reached the error, and the error does not drop the first element.
+	t.deepEqual(result, [1]);
+	t.deepEqual(mappedValues, [2, 3, 1]);
+});
+
+test('pMapIterable - pMapStop with `preserveOrder: false` does not throw an error that settled after the stop', async t => {
+	let releaseStop;
+	const stopGate = new Promise(resolve => {
+		releaseStop = resolve;
+	});
+
+	let releaseError;
+	const errorGate = new Promise(resolve => {
+		releaseError = resolve;
+	});
+
+	let markErrorSettled;
+	const errorSettled = new Promise(resolve => {
+		markErrorSettled = resolve;
+	});
+
+	const values = [];
+
+	for await (const value of pMapIterable([0, 1, 2], async value => {
+		if (value === 0) {
+			setTimeout(releaseStop);
+			return 'a';
+		}
+
+		if (value === 1) {
+			await errorGate;
+			setTimeout(markErrorSettled);
+			throw new Error('after the stop');
+		}
+
+		await stopGate;
+		setTimeout(releaseError);
+		return pMapStop;
+	}, {preserveOrder: false})) {
+		values.push(value);
+
+		// A slow consumer, so the error settles before the consumer reaches the stop.
+		await errorSettled;
+	}
+
+	t.deepEqual(values, ['a']);
+});
+
+test('pMapStop - an error from a later element that lands before the stop rejects', async t => {
+	let releaseStop;
+	const stopGate = new Promise(resolve => {
+		releaseStop = resolve;
+	});
+
+	await t.throwsAsync(pMap([1, 2, 3], async value => {
+		if (value === 2) {
+			await stopGate;
+			return pMapStop;
+		}
+
+		if (value === 3) {
+			setTimeout(releaseStop);
+			throw new Error('later');
+		}
+
+		return value;
+	}), {message: 'later'});
 });

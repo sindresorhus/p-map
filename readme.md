@@ -81,7 +81,7 @@ Minimum: `1`
 Number of concurrently pending promises returned by `mapper`.
 
 > [!NOTE]
-> `pMap` can drop items that pulls from `input` already had in flight: when it stops early, because a mapper throws or the `signal` aborts, and, with `concurrency` above 1, when one pull reports `done` while another still gets an item. That is invisible for a re-readable input, like an array or a string, but a source that cannot be re-read, such as a queue, loses those items. With `concurrency: 1`, only an abort can drop an item.
+> `pMap` can drop items that pulls from `input` already had in flight: when it stops early, because a mapper throws or returns `pMapStop`, or the `signal` aborts, and, with `concurrency` above 1, when one pull reports `done` while another still gets an item. That is invisible for a re-readable input, like an array or a string, but a source that cannot be re-read, such as a queue, loses those items. With `concurrency: 1`, only an abort can drop an item.
 
 ##### backpressure
 
@@ -192,6 +192,36 @@ const result = await pMap(sites, mapper, {concurrency: 2});
 
 console.log(result);
 //=> ['https://sindresorhus.com/', 'https://avajs.dev/', 'https://github.com/']
+```
+
+### pMapStop
+
+Return this value from a `mapper` function to stop iterating, like `break` in a loop.
+
+`pMap` resolves with the results of the elements before it, in order, without waiting for the elements after it. Like in a loop, an error from an earlier element still rejects. An error from a later element rejects only if it happens before the stop. With `stopOnError: false`, only the errors from earlier elements are collected.
+
+`pMapIterable` ends the stream where the stop would have been yielded: after the elements before it with [`preserveOrder`](#preserveorder), or after the results that were ready before it without.
+
+Either way, no more elements are read from `input`, and `input` is then closed. Mappers that are still running are not canceled, and their results are dropped. The element that returns `pMapStop` adds no value to the result.
+
+```js
+import pMap, {pMapStop} from 'p-map';
+
+function * pageNumbers() {
+	for (let pageNumber = 1; ; pageNumber++) {
+		yield pageNumber;
+	}
+}
+
+const mapper = async pageNumber => {
+	const page = await getPage(pageNumber);
+	return page.items.length === 0 ? pMapStop : page;
+};
+
+const pages = await pMap(pageNumbers(), mapper, {concurrency: 4});
+
+console.log(pages);
+//=> Every page before the first empty page, in order
 ```
 
 ## Recipes

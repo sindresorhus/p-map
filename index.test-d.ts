@@ -1,5 +1,5 @@
 import {expectType, expectAssignable, expectError} from 'tsd';
-import pMap, {pMapIterable, type Options, type Mapper, pMapSkip} from './index.js';
+import pMap, {pMapIterable, type Options, type Mapper, pMapSkip, pMapStop} from './index.js';
 
 const sites = [
 	'https://sindresorhus.com',
@@ -92,6 +92,24 @@ expectType<Promise<string[]>>(pMap(new Map([['a', 1]]), async ([key, value]: [st
 
 // An async iterable that yields promises.
 expectType<Promise<number[]>>(pMap(sitesAsyncIterableWithPromises, async (site: string) => site.length));
+
+// A mapper that can return pMapStop.
+const stopMapper = async (site: string) => (site.length > 20 ? pMapStop : site);
+expectAssignable<Mapper<string, string>>(stopMapper);
+expectType<Promise<string[]>>(pMap(sites, stopMapper));
+expectType<AsyncIterable<string>>(pMapIterable(sites, stopMapper));
+
+// A mapper that can return both pMapSkip and pMapStop.
+const skipAndStopMapper = async (number: number) => {
+	if (number === 0) {
+		return pMapSkip;
+	}
+
+	return number > 1 ? pMapStop : number;
+};
+
+expectType<Promise<number[]>>(pMap(numbers, skipAndStopMapper));
+expectType<AsyncIterable<number>>(pMapIterable(numbers, skipAndStopMapper));
 
 // A mapper that always returns pMapSkip.
 expectType<Promise<string[]>>(pMap(sites, async site => (site.length > 0 ? pMapSkip : site)));

@@ -4,7 +4,7 @@ type BaseOptions = {
 
 	Must be an integer from 1 and up or `Infinity`.
 
-	`pMap` can drop items that pulls from `input` already had in flight: when it stops early, because a mapper throws or the `signal` aborts, and, with `concurrency` above 1, when one pull reports `done` while another still gets an item. That is invisible for a re-readable input, like an array or a string, but a source that cannot be re-read, such as a queue, loses those items. With `concurrency: 1`, only an abort can drop an item.
+	`pMap` can drop items that pulls from `input` already had in flight: when it stops early, because a mapper throws or returns `pMapStop`, or the `signal` aborts, and, with `concurrency` above 1, when one pull reports `done` while another still gets an item. That is invisible for a re-readable input, like an array or a string, but a source that cannot be re-read, such as a queue, loses those items. With `concurrency: 1`, only an abort can drop an item.
 
 	@default Infinity
 	*/
@@ -99,7 +99,7 @@ Function which is called for every item in `input`. Expected to return a `Promis
 export type Mapper<Element = any, NewElement = unknown> = (
 	element: Element,
 	index: number
-) => MaybePromise<NewElement | typeof pMapSkip>;
+) => MaybePromise<NewElement | typeof pMapSkip | typeof pMapStop>;
 
 /**
 @param input - Synchronous or asynchronous iterable that is iterated over concurrently, calling the `mapper` function for each element. Each iterated item is `await`'d before the `mapper` is invoked so the iterable may return a `Promise` that resolves to an item. Asynchronous iterables (different from synchronous iterables that return `Promise` that resolves to an item) can be used when the next item may not be ready without waiting for an asynchronous process to complete and/or the end of the iterable may be reached after the asynchronous process completes. For example, reading from a remote queue when the queue has reached empty, or reading lines from a stream.
@@ -132,7 +132,7 @@ export default function pMap<Element, NewElement>(
 	input: AsyncIterable<Element | Promise<Element>> | Iterable<Element | Promise<Element>>,
 	mapper: Mapper<Element, NewElement>,
 	options?: Options
-): Promise<Array<Exclude<NewElement, typeof pMapSkip>>>;
+): Promise<Array<Exclude<NewElement, typeof pMapSkip | typeof pMapStop>>>;
 
 /**
 @param input - Synchronous or asynchronous iterable that is iterated over concurrently, calling the `mapper` function for each element. Each iterated item is `await`'d before the `mapper` is invoked so the iterable may return a `Promise` that resolves to an item. Asynchronous iterables (different from synchronous iterables that return `Promise` that resolves to an item) can be used when the next item may not be ready without waiting for an asynchronous process to complete and/or the end of the iterable may be reached after the asynchronous process completes. For example, reading from a remote queue when the queue has reached empty, or reading lines from a stream.
@@ -153,7 +153,7 @@ export function pMapIterable<Element, NewElement>(
 	input: AsyncIterable<Element | Promise<Element>> | Iterable<Element | Promise<Element>>,
 	mapper: Mapper<Element, NewElement>,
 	options?: IterableOptions
-): AsyncIterable<Exclude<NewElement, typeof pMapSkip>>;
+): AsyncIterable<Exclude<NewElement, typeof pMapSkip | typeof pMapStop>>;
 
 /**
 Return this value from a `mapper` function to skip including the value in the returned array.
@@ -186,3 +186,35 @@ console.log(result);
 ```
 */
 export const pMapSkip: unique symbol;
+
+/**
+Return this value from a `mapper` function to stop iterating, like `break` in a loop.
+
+`pMap` resolves with the results of the elements before it, in order, without waiting for the elements after it. Like in a loop, an error from an earlier element still rejects. An error from a later element rejects only if it happens before the stop. With `stopOnError: false`, only the errors from earlier elements are collected.
+
+`pMapIterable` ends the stream where the stop would have been yielded: after the elements before it with `preserveOrder`, or after the results that were ready before it without.
+
+Either way, no more elements are read from `input`, and `input` is then closed. Mappers that are still running are not canceled, and their results are dropped. The element that returns `pMapStop` adds no value to the result.
+
+@example
+```
+import pMap, {pMapStop} from 'p-map';
+
+function * pageNumbers() {
+	for (let pageNumber = 1; ; pageNumber++) {
+		yield pageNumber;
+	}
+}
+
+const mapper = async pageNumber => {
+	const page = await getPage(pageNumber);
+	return page.items.length === 0 ? pMapStop : page;
+};
+
+const pages = await pMap(pageNumbers(), mapper, {concurrency: 4});
+
+console.log(pages);
+//=> Every page before the first empty page, in order
+```
+*/
+export const pMapStop: unique symbol;

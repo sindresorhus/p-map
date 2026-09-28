@@ -59,10 +59,9 @@ export default async function pMap(
 
 		const pull = createPuller(iterator);
 
-		// Settle only once the source is done and every earlier pull and mapper has finished. A pull
-		// before `done` can still produce an element, while pulls after it do not affect the result.
+		// Settle only once the source is done, or a mapper stopped, and every earlier pull and mapper has finished. A pull before the `done` or the stop can still produce an element, while pulls after it do not affect the result.
 		const settleIfFinished = () => {
-			if (isResolved || !isIterableDone) {
+			if (isResolved || doneIndex === Number.POSITIVE_INFINITY) {
 				return;
 			}
 
@@ -89,24 +88,28 @@ export default async function pMap(
 
 			isResolved = true;
 
+			// A stop ended the result before the source did, so close it, like `for await` does on a `break`. Not at the stop itself, as a source that settles its `next()` calls out of call order may still owe an earlier element, and closing could drop it.
+			if (!isIterableDone) {
+				closeIterator(iterator);
+			}
+
 			// `done` is final, like `for await`, so a `done` that lands between two elements ends
-			// the result there and everything the source produced past it is dropped.
+			// the result there and everything the source produced past it is dropped. A stop cuts it the same way.
 			const lastIndex = Math.min(doneIndex, result.length);
 
-			// Every index below `lastIndex` has a value: an index only goes unassigned when the pull
-			// below it reported `done`, and that is at `doneIndex` itself. So the array is dense
-			// below `lastIndex`, and the fast path can hand it over untouched.
+			// Every index below `lastIndex` has a value: an index only goes unassigned when its pull reported `done` or its mapper returned `pMapStop`, and the lowest such index is `doneIndex`. So the array is dense below `lastIndex`, and the fast path can hand it over untouched.
 			if (lastIndex === result.length && skippedCount === 0) {
 				resolve(result);
 				return;
 			}
 
-			// Otherwise this drops the skipped results and whatever the `done` cut off.
+			// Otherwise this drops the skipped results and whatever the `done` or the stop cut off.
 			resolve(result.slice(0, lastIndex).filter(value => value !== pMapSkip));
 		};
 
 		const next = async () => {
-			if (isResolved) {
+			// After a `done` or a stop, a pull would take an item nobody is going to map, which a one-shot source, like a queue, would lose.
+			if (isResolved || currentIndex >= doneIndex) {
 				return;
 			}
 
@@ -137,12 +140,6 @@ export default async function pMap(
 				return;
 			}
 
-			if (index >= doneIndex) {
-				pendingIndexes.delete(index);
-				settleIfFinished();
-				return;
-			}
-
 			// Intentionally detached
 			(async () => {
 				try {
@@ -154,8 +151,14 @@ export default async function pMap(
 
 					const value = await mapper(element, index);
 
-					// Ignore an item produced after an earlier pull reported `done`.
+					// Ignore an item produced after an earlier pull reported `done` or an earlier mapper returned `pMapStop`.
 					if (index >= doneIndex) {
+						return;
+					}
+
+					// A stop ends the result here, like a `done` from the source, so settling waits only for the earlier elements.
+					if (value === pMapStop) {
+						doneIndex = index;
 						return;
 					}
 
@@ -195,7 +198,7 @@ export default async function pMap(
 		// Create the concurrent runners in a detached (non-awaited)
 		// promise. We need this so we can await the `next()` calls
 		// to stop creating runners before hitting the concurrency limit
-		// if the iterable has already been marked as done.
+		// if the iterable has already been marked as done or a mapper stopped.
 		// NOTE: We *must* do this for async iterators otherwise we'll spin up
 		// infinite `next()` calls by default and never start the event loop.
 		(async () => {
@@ -208,7 +211,7 @@ export default async function pMap(
 					break;
 				}
 
-				if (isIterableDone || isResolved) {
+				if (isResolved || currentIndex >= doneIndex) {
 					break;
 				}
 			}
@@ -251,6 +254,9 @@ export function pMapIterable(
 				let isIterableDone = false;
 				let index = 0;
 
+				// The lowest index whose mapper returned `pMapStop`, or, with `preserveOrder`, whose pull, element, or mapper threw. The stream ends there, like a `break` or a `throw` in a loop. Once it is set, nothing past it is pulled, and no pending element past it is mapped, while the earlier elements still finish and are yielded first. `isDone` cannot do this, as it would drop the values of the earlier elements too.
+				let stopIndex = Number.POSITIVE_INFINITY;
+
 				// Without `preserveOrder`, each spawn still takes a slot in `promises`, so `backpressure` counts the same, but the slots are filled in the order the workers settle rather than the order they were spawned in, so the consumer gets whichever result is ready first. A worker always fills the oldest empty slot, so the resolvers are used in spawn order.
 				const slotResolvers = new Map();
 				let slotCount = 0;
@@ -267,9 +273,8 @@ export function pMapIterable(
 				const pull = createPuller(iterator);
 
 				function trySpawn() {
-					// Do not spawn once the consumer is gone. The pull would be wasted work, and for a
-					// one-shot source, like a queue, it takes an item nobody is going to ask for.
-					if (isDone || isIterableDone || !(pendingPromisesCount < concurrency && promises.length - headIndex < backpressure)) {
+					// Do not spawn once the consumer is gone, the source is done, or the stream ends at an earlier element. The pull would be wasted work, and for a one-shot source, like a queue, it takes an item nobody is going to ask for.
+					if (isDone || isIterableDone || index > stopIndex || !(pendingPromisesCount < concurrency && promises.length - headIndex < backpressure)) {
 						return;
 					}
 
@@ -296,8 +301,8 @@ export function pMapIterable(
 
 							const element = await value;
 
-							// The consumer stopped iterating or a mapper threw while this input was pending, so drop it instead of doing work nobody will consume.
-							if (isDone) {
+							// The consumer stopped iterating, or the stream ends before this element, while this input was pending, so drop it instead of doing work nobody will consume.
+							if (isDone || currentIndex > stopIndex) {
 								pendingPromisesCount--;
 								return {done: false, value: pMapSkip};
 							}
@@ -306,10 +311,21 @@ export function pMapIterable(
 
 							pendingPromisesCount--;
 
+							if (returnValue === pMapStop) {
+								stopIndex = Math.min(stopIndex, currentIndex);
+							}
+
 							return {done: false, value: returnValue};
 						} catch (error) {
 							pendingPromisesCount--;
-							isDone = true;
+
+							// With `preserveOrder`, the error is thrown at its own position, after the results before it, so those still finish. Without it, the error is thrown as soon as it settles, so nothing still pending can be yielded anymore.
+							if (preserveOrder) {
+								stopIndex = Math.min(stopIndex, currentIndex);
+							} else {
+								isDone = true;
+							}
+
 							return {error};
 						}
 					})();
@@ -384,6 +400,11 @@ export function pMapIterable(
 							continue;
 						}
 
+						// The stream ends where the stop would have been yielded: after the earlier elements with `preserveOrder`, and after the results that were ready before it without.
+						if (value === pMapStop) {
+							return;
+						}
+
 						// Spawn if just dropped below backpressure limit and below the concurrency limit
 						trySpawn();
 
@@ -428,6 +449,8 @@ export function pMapIterable(
 }
 
 export const pMapSkip = Symbol('skip');
+
+export const pMapStop = Symbol('stop');
 
 // The checks `pMap` and `pMapIterable` share, so both reject the same input the same way.
 // `pMap` runs this inside its promise, so a bad argument rejects rather than throws.
