@@ -1713,6 +1713,226 @@ test('pMapIterable - backpressure', async t => {
 	await asyncIterator.return();
 });
 
+// https://github.com/sindresorhus/p-map/issues/78
+test('pMapIterable - reads the next element while the mappers run when `backpressure` allows it', async t => {
+	for (const {backpressure, expectedPulls} of [
+		// Everything in flight already fills `backpressure`, so nothing is read ahead.
+		{backpressure: undefined, expectedPulls: 2},
+		// A pull does not hold a mapper slot, so up to `concurrency` elements are read ahead.
+		{backpressure: 10, expectedPulls: 4},
+		// Without a `backpressure` limit, the read-ahead while the mappers run is still capped at `concurrency`.
+		{backpressure: Number.POSITIVE_INFINITY, expectedPulls: 4},
+	]) {
+		const source = countingSource();
+		const {mapper, release} = gatedMapper();
+		const started = [];
+
+		const iterator = pMapIterable(source, value => {
+			started.push(value);
+			return mapper(value);
+		}, {concurrency: 2, backpressure})[Symbol.asyncIterator]();
+
+		const first = iterator.next();
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		t.deepEqual(started, [0, 1]);
+		t.is(source.pulls, expectedPulls);
+
+		release(0);
+		t.deepEqual(await first, {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		// The freed mapper slot goes to the element that was read ahead, if there is one.
+		t.deepEqual(started, [0, 1, 2]);
+
+		await iterator.return(); // eslint-disable-line no-await-in-loop
+	}
+});
+
+test('pMapIterable - read-ahead never overlaps more `next()` calls than `concurrency`', async t => {
+	for (const backpressure of [2, 5, Number.POSITIVE_INFINITY]) {
+		let pending = 0;
+		let peak = 0;
+		let index = 0;
+		const source = {
+			[Symbol.asyncIterator]() {
+				return {
+					async next() {
+						pending++;
+						peak = Math.max(peak, pending);
+						await delay(1);
+						pending--;
+						return index < 10 ? {done: false, value: index++} : {done: true, value: undefined};
+					},
+				};
+			},
+		};
+
+		// eslint-disable-next-line no-await-in-loop
+		t.deepEqual(await collectAsyncIterable(pMapIterable(source, async value => {
+			await delay(2);
+			return value;
+		}, {concurrency: 2, backpressure})), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+		t.true(peak <= 2, `${peak} overlapping \`next()\` calls with \`backpressure: ${backpressure}\``);
+	}
+});
+
+// https://github.com/sindresorhus/p-map/issues/78
+// The issue's pipeline: a slow source and three slow stages. Each stage reads its next element while it maps the current one, so the run takes about as long as the source plus one pass through the stages, instead of reading and mapping one after the other.
+test.serial('pMapIterable - a chain of stages overlaps reading and mapping', async t => {
+	async function * source() {
+		for (let index = 0; index < 8; index++) {
+			await delay(50); // eslint-disable-line no-await-in-loop
+			yield index;
+		}
+	}
+
+	const stage = iterable => pMapIterable(iterable, async value => {
+		await delay(50);
+		return value;
+	}, {concurrency: 1, backpressure: 2});
+
+	const end = timeSpan();
+	t.deepEqual(await collectAsyncIterable(stage(stage(stage(source())))), [0, 1, 2, 3, 4, 5, 6, 7]);
+
+	// About 550 ms with the overlap (8 elements from the source, plus 3 stages for the last one), and about 900 ms without it.
+	assertInRange(t, end(), {start: 500, end: 850});
+});
+
+test('pMapIterable - `backpressure` caps the elements read ahead together with the running mappers', async t => {
+	for (const preserveOrder of [true, false]) {
+		const source = countingSource();
+		const {mapper, release} = gatedMapper();
+		const started = [];
+
+		const iterator = pMapIterable(source, value => {
+			started.push(value);
+			return mapper(value);
+		}, {concurrency: 2, backpressure: 3, preserveOrder})[Symbol.asyncIterator]();
+
+		const first = iterator.next();
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		// Two running mappers and one element waiting for a mapper fill `backpressure`, although `concurrency` allows two waiting elements.
+		t.deepEqual(started, [0, 1]);
+		t.is(source.pulls, 3);
+
+		release(0);
+		t.deepEqual(await first, {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		// The waiting element got the freed mapper slot, and taking the result freed one `backpressure` slot, so one more element is read.
+		t.deepEqual(started, [0, 1, 2]);
+		t.is(source.pulls, 4);
+
+		await iterator.return(); // eslint-disable-line no-await-in-loop
+	}
+});
+
+test('pMapIterable - does not map the elements waiting for a mapper when `return()` is called', async t => {
+	const source = countingSource();
+	const {mapper, release} = gatedMapper();
+	const started = [];
+
+	const iterator = pMapIterable(source, value => {
+		started.push(value);
+		return mapper(value);
+	}, {concurrency: 2, backpressure: 10})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	// Two running mappers, and two elements read ahead that wait for a mapper.
+	t.deepEqual(started, [0, 1]);
+	t.is(source.pulls, 4);
+
+	const returned = iterator.return();
+	release(0);
+	release(1);
+
+	t.deepEqual(await first, {done: false, value: 0});
+	t.deepEqual(await returned, {done: true, value: undefined});
+	await drainEventLoop();
+
+	// The freed mapper slots went to the waiting elements, which were dropped instead of mapped.
+	t.deepEqual(started, [0, 1]);
+	t.is(source.pulls, 4);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMapIterable - pMapStop does not map the later elements waiting for a mapper', async t => {
+	const source = countingSource();
+	const {mapper, release} = gatedMapper();
+	const started = [];
+
+	const iterator = pMapIterable(source, async value => {
+		started.push(value);
+		const result = await mapper(value);
+		return result === 1 ? pMapStop : result;
+	}, {concurrency: 2, backpressure: 10})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	t.deepEqual(started, [0, 1]);
+	t.is(source.pulls, 4);
+
+	release(1);
+	await drainEventLoop();
+
+	// The freed mapper slot went to the elements after the stop, which were dropped instead of mapped.
+	t.deepEqual(started, [0, 1]);
+
+	release(0);
+	t.deepEqual(await first, {done: false, value: 0});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.is(source.pulls, 4);
+	t.is(source.returnCalls, 1);
+});
+
+// The first element resolves last, so it waits for a mapper behind a later one. The throwing mapper must still hand its slot over, or the first element is never mapped and the consumer hangs.
+test('pMapIterable - a mapper that throws hands its slot to an earlier element waiting for a mapper', async t => {
+	let resolveFirstElement;
+	const firstElement = new Promise(resolve => {
+		resolveFirstElement = resolve;
+	});
+
+	const {mapper, release} = gatedMapper();
+	const started = [];
+
+	const iterator = pMapIterable([firstElement, 1, 2, 3, 4, 5], async value => {
+		started.push(value);
+		const result = await mapper(value);
+
+		if (result === 1) {
+			throw new Error('mapper error 1');
+		}
+
+		return result;
+	}, {concurrency: 2, backpressure: 10})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	// The second and third elements took the mapper slots, and the fourth waits for one.
+	t.deepEqual(started, [1, 2]);
+
+	resolveFirstElement(0);
+	await drainEventLoop();
+
+	// The fourth element is dropped, as it comes after the error, and the first element gets the slot after it.
+	release(1);
+	await drainEventLoop();
+	t.deepEqual(started, [1, 2, 0]);
+
+	release(0);
+	t.deepEqual(await first, {done: false, value: 0});
+	await t.throwsAsync(iterator.next(), {message: 'mapper error 1'});
+
+	release(2);
+});
+
 test('pMapIterable - async input, backpressure > concurrency', async t => {
 	async function * source() {
 		yield 1;
@@ -2100,7 +2320,8 @@ test('pMapIterable - `preserveOrder: false` yields a completed result before a s
 		throw new Error('source failed');
 	}
 
-	const iterator = pMapIterable(source(), value => value, {concurrency: 1, backpressure: 2, preserveOrder: false})[Symbol.asyncIterator]();
+	// No read-ahead, as a `backpressure` above `concurrency` would read the throwing element while the first one is still mapped, and the error would then come first.
+	const iterator = pMapIterable(source(), value => value, {concurrency: 1, preserveOrder: false})[Symbol.asyncIterator]();
 
 	t.deepEqual(await iterator.next(), {done: false, value: 0});
 	await t.throwsAsync(iterator.next(), {message: 'source failed'});
@@ -2849,7 +3070,8 @@ test('pMapIterable - a mapper error stops pulling and mapping past it, but still
 	}, {concurrency: 3, backpressure: 10})), {message: 'mapper error 1'});
 
 	t.deepEqual(mappedValues, [1, 0]);
-	t.is(pulls, 3);
+	// The fourth element was read ahead when the second one started mapping, but it is never mapped.
+	t.is(pulls, 4);
 });
 
 test('pMapIterable - with `preserveOrder: false`, a mapper error drops pending input while the consumer is busy', async t => {
@@ -3866,11 +4088,12 @@ test('pMapIterable - pMapStop stops pulling and closes the source', async t => {
 		return value === 1 ? pMapStop : value;
 	}, {concurrency: 2, backpressure: 10})), [0]);
 
-	t.is(source.pulls, 2);
+	// The stop at the second element, plus the `concurrency` elements read ahead while the mappers ran.
+	t.is(source.pulls, 4);
 	t.is(source.returnCalls, 1);
 
 	await delay(30);
-	t.is(source.pulls, 2);
+	t.is(source.pulls, 4);
 });
 
 // The consumer is still waiting on the first element when the stop happens, so the stop itself has to keep the later element from being mapped, without dropping the earlier one.
@@ -3930,11 +4153,12 @@ test('pMapIterable - pMapStop with `preserveOrder: false` stops pulling and clos
 		return value === 1 ? pMapStop : value;
 	}, {concurrency: 2, backpressure: 10, preserveOrder: false})), []);
 
-	t.is(source.pulls, 2);
+	// The stop at the second element, plus the `concurrency` elements read ahead while the mappers ran.
+	t.is(source.pulls, 4);
 	t.is(source.returnCalls, 1);
 
 	await delay(40);
-	t.is(source.pulls, 2);
+	t.is(source.pulls, 4);
 });
 
 test('pMapIterable - pMapStop with `preserveOrder: false` stops pulling while the consumer is busy', async t => {
@@ -3950,7 +4174,8 @@ test('pMapIterable - pMapStop with `preserveOrder: false` stops pulling while th
 	}
 
 	t.deepEqual(values, [0]);
-	t.is(source.pulls, 2);
+	// The stop at the second element, plus the one element read ahead while it was mapped.
+	t.is(source.pulls, 3);
 	t.is(source.returnCalls, 1);
 });
 
@@ -3965,11 +4190,12 @@ test('pMapIterable - pMapStop stops pulling from an async source and closes it',
 		return value === 1 ? pMapStop : value;
 	}, {concurrency: 2, backpressure: 10})), [0]);
 
-	t.is(source.pulls, 2);
+	// The stop at the second element, plus the `concurrency` elements read ahead while the mappers ran.
+	t.is(source.pulls, 4);
 	t.is(source.returnCalls, 1);
 
 	await delay(30);
-	t.is(source.pulls, 2);
+	t.is(source.pulls, 4);
 });
 
 test('pMapIterable - pMapStop, the lowest index wins when a later stop settles last', async t => {

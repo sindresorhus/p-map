@@ -250,8 +250,27 @@ export function pMapIterable(
 				// run O(n²) whenever `backpressure` let the array grow, which is the default.
 				let promises = [];
 				let headIndex = 0;
-				let pendingPromisesCount = 0;
 				let isIterableDone = false;
+
+				// An element that is being read, or is waiting for a mapper, does not hold a mapper slot, so the next element can be read while the mappers run. Those elements have their own cap of `concurrency`, so the source never sees more than `concurrency` overlapping `next()` calls, even with `backpressure: Infinity`. `backpressure` caps everything in flight together.
+				let readingCount = 0;
+				let runningMappersCount = 0;
+
+				// The workers waiting for a mapper slot, in the order they started waiting. A finished mapper hands its slot to the oldest one.
+				const mapperWaiters = new Map();
+				let mapperWaiterCount = 0;
+				let wokenMapperWaiterCount = 0;
+
+				const releaseMapperSlot = () => {
+					if (wokenMapperWaiterCount === mapperWaiterCount) {
+						runningMappersCount--;
+						return;
+					}
+
+					mapperWaiters.get(wokenMapperWaiterCount)();
+					mapperWaiters.delete(wokenMapperWaiterCount++);
+				};
+
 				let index = 0;
 
 				// The lowest index whose mapper returned `pMapStop`, or, with `preserveOrder`, whose pull, element, or mapper threw. The stream ends there, like a `break` or a `throw` in a loop. Once it is set, nothing past it is pulled, and no pending element past it is mapped, while the earlier elements still finish and are yielded first. `isDone` cannot do this, as it would drop the values of the earlier elements too.
@@ -274,11 +293,11 @@ export function pMapIterable(
 
 				function trySpawn() {
 					// Do not spawn once the consumer is gone, the source is done, or the stream ends at an earlier element. The pull would be wasted work, and for a one-shot source, like a queue, it takes an item nobody is going to ask for.
-					if (isDone || isIterableDone || index > stopIndex || !(pendingPromisesCount < concurrency && promises.length - headIndex < backpressure)) {
+					if (isDone || isIterableDone || index > stopIndex || !(readingCount < concurrency && promises.length - headIndex < backpressure)) {
 						return;
 					}
 
-					pendingPromisesCount++;
+					readingCount++;
 
 					// Take the index when the pull starts, not when it resolves, so a source that
 					// settles its `next()` calls out of call order still gets the right position.
@@ -288,28 +307,46 @@ export function pMapIterable(
 					// the consumer abandons after an earlier error becomes an unhandled rejection.
 					const promise = (async () => {
 						try {
-							const {done, value} = await pull();
+							let element;
+							try {
+								const {done, value} = await pull();
 
-							if (done) {
-								isIterableDone = true;
-								pendingPromisesCount--;
-								return {done: true};
+								if (done) {
+									isIterableDone = true;
+									return {done: true};
+								}
+
+								// Spawn if still below the reading and backpressure limits
+								trySpawn();
+
+								element = await value;
+
+								if (runningMappersCount < concurrency) {
+									runningMappersCount++;
+								} else {
+									// `releaseMapperSlot` hands the slot over without decrementing `runningMappersCount`, so it is already counted.
+									await new Promise(resolve => {
+										mapperWaiters.set(mapperWaiterCount++, resolve);
+									});
+								}
+							} finally {
+								readingCount--;
 							}
 
-							// Spawn if still below concurrency and backpressure limit
+							// Spawn now that this element is no longer waiting for a mapper, so the next one is read while this one is mapped
 							trySpawn();
 
-							const element = await value;
+							let returnValue;
+							try {
+								// The consumer stopped iterating, or the stream ends before this element, while this element was being read or waiting for a mapper, so drop it instead of doing work nobody will consume.
+								if (isDone || currentIndex > stopIndex) {
+									return {done: false, value: pMapSkip};
+								}
 
-							// The consumer stopped iterating, or the stream ends before this element, while this input was pending, so drop it instead of doing work nobody will consume.
-							if (isDone || currentIndex > stopIndex) {
-								pendingPromisesCount--;
-								return {done: false, value: pMapSkip};
+								returnValue = await mapper(element, currentIndex);
+							} finally {
+								releaseMapperSlot();
 							}
-
-							const returnValue = await mapper(element, currentIndex);
-
-							pendingPromisesCount--;
 
 							if (returnValue === pMapStop) {
 								stopIndex = Math.min(stopIndex, currentIndex);
@@ -317,8 +354,6 @@ export function pMapIterable(
 
 							return {done: false, value: returnValue};
 						} catch (error) {
-							pendingPromisesCount--;
-
 							// With `preserveOrder`, the error is thrown at its own position, after the results before it, so those still finish. Without it, the error is thrown as soon as it settles, so nothing still pending can be yielded anymore.
 							if (preserveOrder) {
 								stopIndex = Math.min(stopIndex, currentIndex);
@@ -332,10 +367,6 @@ export function pMapIterable(
 
 					if (preserveOrder) {
 						promises.push(promise);
-						promise.then(() => {
-							// Spawn if still below backpressure limit and just dropped below concurrency limit
-							trySpawn();
-						});
 						return;
 					}
 
@@ -363,7 +394,6 @@ export function pMapIterable(
 						}
 
 						fillSlot(result);
-						trySpawn();
 					});
 				}
 
@@ -405,7 +435,7 @@ export function pMapIterable(
 							return;
 						}
 
-						// Spawn if just dropped below backpressure limit and below the concurrency limit
+						// Spawn if just dropped below the backpressure limit and still below the reading limit
 						trySpawn();
 
 						// A `pMapSkip` result stays in `promises` and is stepped over here. Splicing it out

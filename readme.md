@@ -91,14 +91,16 @@ Type: `number` *(Integer)*\
 Default: `options.concurrency`\
 Minimum: `options.concurrency`
 
-Maximum number of promises returned by `mapper` that have resolved but not yet collected by the consumer of the async iterable. Calls to `mapper` will be limited so that there is never too much backpressure.
+Maximum number of elements taken from `input` that the consumer of the async iterable has not collected yet. That counts the elements being read, waiting for `mapper`, being mapped, and the results waiting to be collected. Calls to `mapper` will be limited so that there is never too much backpressure.
 
 Useful whenever you are consuming the iterable slower than what the mapper function can produce concurrently. For example, to avoid making an overwhelming number of HTTP requests if you are saving each of the results to a database.
+
+A `backpressure` above `concurrency` also lets `pMapIterable` read ahead: up to `backpressure - concurrency` elements, but no more than `concurrency`, are read from `input` while the mappers run, so a slow `input` does not leave a mapper waiting for its next element. Useful when reading `input` is slow, for example when it is another `pMapIterable`. With `concurrency: 1`, `backpressure: 2` overlaps reading each element with mapping the one before it. When the iteration ends early, the elements read ahead are not mapped, so a source that cannot be re-read, such as a queue, loses them.
 
 A result of `pMapSkip` is collected by the consumer stepping over it, so it counts towards the limit until then. A mapper that skips most elements therefore still reads no further ahead than `backpressure` allows.
 
 > [!NOTE]
-> `backpressure` defaults to `concurrency`, which defaults to `Infinity`, so nothing bounds the read-ahead by default. A source that never ends is then read without limit until memory runs out. Give such a source a finite `concurrency`. That also bounds `backpressure`, since it defaults to `concurrency`.
+> `backpressure` defaults to `concurrency`, which defaults to `Infinity`, so by default nothing bounds how far `input` is read ahead of the consumer. A source that never ends is then read without limit until memory runs out. Give such a source a finite `concurrency`. That also bounds `backpressure`, since it defaults to `concurrency`.
 
 ##### preserveOrder
 
