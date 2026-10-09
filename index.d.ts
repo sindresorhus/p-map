@@ -4,6 +4,14 @@ type BaseOptions = {
 
 	Must be an integer from 1 and up or `Infinity`.
 
+	The right value depends on the work. Rules of thumb:
+	- Network or database: the pool size or rate limit of the other side.
+	- File system: tens to low hundreds, to avoid `EMFILE` errors.
+	- Child processes or worker threads: [`os.availableParallelism()`](https://nodejs.org/api/os.html#osavailableparallelism).
+	- Synchronous CPU-bound work: concurrency does not help.
+
+	If unsure, start low and measure. See also the “Dynamic concurrency” recipe in the readme.
+
 	`pMap` and `pMapSettled` can drop items that pulls from `input` already had in flight: when they stop early, because a mapper returns `pMapStop`, a mapper throws (only for `pMap`), or the `signal` aborts, and, with `concurrency` above 1, when one pull reports `done` while another still gets an item. That is invisible for a re-readable input, like an array or a string, but a source that cannot be re-read, such as a queue, loses those items. With `concurrency: 1`, only an abort can drop an item.
 
 	@default Infinity
