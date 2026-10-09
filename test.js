@@ -1,11 +1,13 @@
 import process from 'node:process';
+import {Readable} from 'node:stream';
+import vm from 'node:vm';
 import {getEventListeners} from 'node:events';
 import test from 'ava';
 import delay from 'delay';
 import timeSpan from 'time-span';
 import randomInt from 'random-int';
 import assertInRange from './assert-in-range.js';
-import pMap, {pMapIterable, pMapSkip, pMapStop} from './index.js';
+import pMap, {pMapIterable, pMapSettled, pMapKeyed, pMapSettledKeyed, pMapSkip, pMapStop} from './index.js';
 
 const sharedInput = [
 	[async () => 10, 300],
@@ -4337,4 +4339,4021 @@ test('pMapStop - an error from a later element that lands before the stop reject
 
 		return value;
 	}), {message: 'later'});
+});
+
+//
+// pMapSettled tests
+//
+
+const fulfilled = value => ({status: 'fulfilled', value});
+const rejected = reason => ({status: 'rejected', reason});
+
+test('pMapSettled - settles every element in input order', async t => {
+	const error = new Error('two');
+	const results = await pMapSettled([1, 2, 3, 4], async value => {
+		// Finish in the reverse of input order.
+		await delay(40 - (value * 10));
+
+		if (value === 2) {
+			throw error;
+		}
+
+		return value * 10;
+	}, {concurrency: 4});
+
+	t.deepEqual(results, [fulfilled(10), rejected(error), fulfilled(30), fulfilled(40)]);
+});
+
+test('pMapSettled - matches `Promise.allSettled` for the same input', async t => {
+	const createInput = () => {
+		const rejection = Promise.reject(new Error('input'));
+		return [1, rejection, delay(10, {value: 3}), Promise.resolve(4)];
+	};
+
+	t.deepEqual(await pMapSettled(createInput(), value => value), await Promise.allSettled(createInput()));
+});
+
+test('pMapSettled - an element that rejects is settled without calling the mapper', async t => {
+	const error = new Error('input');
+	const mappedValues = [];
+
+	const results = await pMapSettled([1, Promise.reject(error), 3], value => {
+		mappedValues.push(value);
+		return value;
+	}, {concurrency: 3});
+
+	t.deepEqual(results, [fulfilled(1), rejected(error), fulfilled(3)]);
+	t.deepEqual(mappedValues, [1, 3]);
+});
+
+test('pMapSettled - respects concurrency', async t => {
+	let running = 0;
+	let maxRunning = 0;
+
+	const results = await pMapSettled([1, 2, 3, 4, 5, 6], async value => {
+		running++;
+		maxRunning = Math.max(maxRunning, running);
+		await delay(10);
+		running--;
+
+		if (value % 2 === 0) {
+			throw new Error(`${value}`);
+		}
+
+		return value;
+	}, {concurrency: 2});
+
+	t.is(maxRunning, 2);
+	t.deepEqual(results.map(result => result.status), ['fulfilled', 'rejected', 'fulfilled', 'rejected', 'fulfilled', 'rejected']);
+});
+
+test('pMapSettled - keeps a mapper error that is `undefined`', async t => {
+	// Thrown through a variable so the intent is not a bare `throw undefined`.
+	const thrown = undefined;
+
+	t.deepEqual(await pMapSettled([1], async () => {
+		throw thrown;
+	}), [rejected(thrown)]);
+});
+
+test('pMapSettled - leaves out `pMapSkip` results', async t => {
+	const error = new Error('three');
+
+	const results = await pMapSettled([1, 2, 3, 4], async value => {
+		if (value === 2) {
+			return pMapSkip;
+		}
+
+		if (value === 3) {
+			throw error;
+		}
+
+		return value;
+	});
+
+	t.deepEqual(results, [fulfilled(1), rejected(error), fulfilled(4)]);
+});
+
+test('pMapSettled - a fulfilled result can hold a value that looks like a settled result', async t => {
+	t.deepEqual(await pMapSettled([1], () => rejected('not really')), [fulfilled(rejected('not really'))]);
+});
+
+test('pMapSettled - `pMapStop` resolves with the results before the stop', async t => {
+	const error = new Error('two');
+
+	const results = await pMapSettled([1, 2, 3, 4, 5], async value => {
+		await delay(value === 1 ? 30 : 10);
+
+		if (value === 1) {
+			return value;
+		}
+
+		if (value === 2) {
+			throw error;
+		}
+
+		return pMapStop;
+	}, {concurrency: 2});
+
+	t.deepEqual(results, [fulfilled(1), rejected(error)]);
+});
+
+test('pMapSettled - an error after `pMapStop` does not change the results', async t => {
+	const results = await pMapSettled([1, 2, 3], async value => {
+		if (value === 2) {
+			await delay(10);
+			return pMapStop;
+		}
+
+		if (value === 3) {
+			await delay(30);
+			throw new Error('after the stop');
+		}
+
+		return value;
+	});
+
+	// Wait for the mapper after the stop to throw.
+	await delay(50);
+
+	t.deepEqual(results, [fulfilled(1)]);
+});
+
+test('pMapSettled - works with an async iterable', async t => {
+	const results = await pMapSettled(new AsyncTestData(errorInput1), mapper, {concurrency: 2});
+
+	t.deepEqual(results.map(result => result.status), ['fulfilled', 'fulfilled', 'rejected', 'rejected']);
+	t.deepEqual(results.slice(0, 2), [fulfilled(20), fulfilled(30)]);
+	t.is(results[2].reason.message, 'foo');
+	t.is(results[3].reason.message, 'bar');
+});
+
+test('pMapSettled - rejects when the source iterator throws', async t => {
+	await t.throwsAsync(pMapSettled(new ThrowingIterator(5, 2), async value => {
+		throw new Error(`mapper ${value}`);
+	}, {concurrency: 1}), {message: 'throwing on index 2'});
+});
+
+test('pMapSettled - rejects when the signal aborts', async t => {
+	const abortController = new AbortController();
+
+	setTimeout(() => {
+		abortController.abort();
+	}, 10);
+
+	await t.throwsAsync(pMapSettled([1, 2], async value => {
+		await delay(100);
+		throw new Error(`${value}`);
+	}, {signal: abortController.signal}), {name: 'AbortError'});
+});
+
+test('pMapSettled - validates the arguments', async t => {
+	await t.throwsAsync(pMapSettled(undefined, value => value), {instanceOf: TypeError});
+	await t.throwsAsync(pMapSettled([], undefined), {instanceOf: TypeError});
+	await t.throwsAsync(pMapSettled([], value => value, {concurrency: 0}), {instanceOf: TypeError});
+});
+
+test('pMapSettled - ignores `stopOnError: false`', async t => {
+	const error = new Error('one');
+
+	const results = await pMapSettled([1, 2], async value => {
+		if (value === 1) {
+			throw error;
+		}
+
+		return value;
+	}, {stopOnError: false});
+
+	t.deepEqual(results, [rejected(error), fulfilled(2)]);
+});
+
+test('pMapSettled - empty input', async t => {
+	t.deepEqual(await pMapSettled([], value => value), []);
+});
+
+//
+// pMapKeyed and pMapSettledKeyed tests
+//
+
+test('pMapKeyed - maps each value with its key into a null-prototype object', async t => {
+	const result = await pMapKeyed({a: 1, b: Promise.resolve(2)}, async (value, key) => `${key}${value}`);
+
+	t.is(Object.getPrototypeOf(result), null);
+	t.deepEqual(result, {a: 'a1', b: 'b2'});
+});
+
+test('pMapKeyed - uses the own enumerable string and symbol keys, in property order', async t => {
+	const symbol = Symbol('symbol');
+	const input = Object.create({inherited: 'inherited'});
+	input.b = 'b';
+	input.a = 'a';
+	input[2] = 'two';
+	input[1] = 'one';
+	input[symbol] = 'symbol';
+	Object.defineProperty(input, 'hidden', {value: 'hidden', enumerable: false});
+
+	const mappedKeys = [];
+	const result = await pMapKeyed(input, (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	}, {concurrency: 1});
+
+	t.deepEqual(Reflect.ownKeys(result), ['1', '2', 'b', 'a', symbol]);
+	t.deepEqual(mappedKeys, ['1', '2', 'b', 'a', symbol]);
+	t.deepEqual(result, {1: 'one', 2: 'two', b: 'b', a: 'a', [symbol]: 'symbol'});
+});
+
+test('pMapKeyed - checks and reads each key in turn, like `Promise.allKeyed`', async t => {
+	const traps = [];
+	const input = new Proxy({x: 1, y: 2}, {
+		ownKeys(target) {
+			traps.push('ownKeys');
+			return Reflect.ownKeys(target);
+		},
+		getOwnPropertyDescriptor(target, key) {
+			traps.push(`getOwnPropertyDescriptor ${key}`);
+			return Reflect.getOwnPropertyDescriptor(target, key);
+		},
+		get(target, key, receiver) {
+			traps.push(`get ${key}`);
+			return Reflect.get(target, key, receiver);
+		},
+	});
+
+	t.deepEqual(await pMapKeyed(input, value => value), {x: 1, y: 2});
+	t.deepEqual(traps, ['ownKeys', 'getOwnPropertyDescriptor x', 'get x', 'getOwnPropertyDescriptor y', 'get y']);
+});
+
+test('pMapKeyed - a key like `__proto__` is an own property of the result', async t => {
+	const input = JSON.parse('{"__proto__": 1, "toString": 2}');
+	const result = await pMapKeyed(input, value => value * 10);
+
+	t.deepEqual(Object.keys(result), ['__proto__', 'toString']);
+	t.is(result.__proto__, 10); // eslint-disable-line no-proto
+	t.is(result.toString, 20);
+});
+
+test('pMapKeyed - rejects on a mapper error', async t => {
+	await t.throwsAsync(pMapKeyed({a: 1, b: 2}, async (value, key) => {
+		if (key === 'b') {
+			throw new Error('b');
+		}
+
+		return value;
+	}), {message: 'b'});
+});
+
+test('pMapKeyed - rejects on a value that rejects, without calling the mapper for it', async t => {
+	const mappedKeys = [];
+
+	await t.throwsAsync(pMapKeyed({a: 1, b: Promise.reject(new Error('b'))}, (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	}), {message: 'b'});
+
+	t.deepEqual(mappedKeys, ['a']);
+});
+
+test('pMapKeyed - collects the errors in key order with stopOnError: false', async t => {
+	const error = await t.throwsAsync(pMapKeyed({a: 1, b: 2, c: 3}, async (value, key) => {
+		// Finish in the reverse of key order.
+		await delay(30 - (value * 10));
+
+		if (key !== 'b') {
+			throw new Error(key);
+		}
+
+		return value;
+	}, {stopOnError: false}), {instanceOf: AggregateError});
+
+	t.deepEqual(error.errors.map(error => error.message), ['a', 'c']);
+});
+
+test('pMapKeyed - collects a value that rejects with stopOnError: false', async t => {
+	const mappedKeys = [];
+
+	const error = await t.throwsAsync(pMapKeyed({a: 1, b: Promise.reject(new Error('b')), c: 3}, (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	}, {stopOnError: false}), {instanceOf: AggregateError});
+
+	t.deepEqual(error.errors.map(error => error.message), ['b']);
+	t.deepEqual(mappedKeys, ['a', 'c']);
+});
+
+test.serial('pMapKeyed - a value that rejects before a mapper slot reaches it is not an unhandled rejection', async t => {
+	const unhandledRejections = [];
+	const onUnhandledRejection = error => {
+		unhandledRejections.push(error);
+	};
+
+	process.on('unhandledRejection', onUnhandledRejection);
+
+	try {
+		await t.throwsAsync(pMapKeyed({slow: delay(50), fails: Promise.reject(new Error('fails'))}, value => value, {concurrency: 1}), {message: 'fails'});
+
+		const result = await pMapSettledKeyed({slow: delay(50), fails: Promise.reject(new Error('fails'))}, value => value, {concurrency: 1});
+		t.is(result.fails.reason.message, 'fails');
+
+		const mapResult = await pMapSettledKeyed(new Map([['slow', delay(50)], ['fails', Promise.reject(new Error('fails'))]]), value => value, {concurrency: 1});
+		t.is(mapResult.get('fails').reason.message, 'fails');
+
+		// A value keeps its handler when reading a later value throws.
+		await t.throwsAsync(pMapKeyed({
+			fails: Promise.reject(new Error('fails')),
+			get later() {
+				throw new Error('getter');
+			},
+		}, value => value), {message: 'getter'});
+
+		// Every value gets its handler before an argument error rejects.
+		await t.throwsAsync(pMapKeyed({fails: Promise.reject(new Error('fails'))}, undefined), {message: 'Mapper function is required'});
+		await t.throwsAsync(pMapKeyed({fails: Promise.reject(new Error('fails'))}, value => value, {concurrency: 0}), {instanceOf: TypeError});
+
+		await drainEventLoop();
+	} finally {
+		process.off('unhandledRejection', onUnhandledRejection);
+	}
+
+	t.deepEqual(unhandledRejections, []);
+});
+
+test('pMapKeyed - `pMapSkip` leaves out the key', async t => {
+	const result = await pMapKeyed({a: 1, b: 2, c: 3}, value => (value === 2 ? pMapSkip : value));
+	t.deepEqual(result, {a: 1, c: 3});
+});
+
+test('pMapKeyed - `pMapStop` keeps the keys before it, and ignores an error from a later key', async t => {
+	const result = await pMapKeyed({a: 1, b: 2, c: 3, d: 4}, async (value, key) => {
+		if (key === 'a') {
+			await delay(30);
+			return value;
+		}
+
+		if (key === 'c') {
+			await delay(10);
+			return pMapStop;
+		}
+
+		if (key === 'd') {
+			await delay(20);
+			throw new Error('after the stop');
+		}
+
+		return value;
+	});
+
+	t.deepEqual(result, {a: 1, b: 2});
+});
+
+test('pMapKeyed - rejects when the signal aborts', async t => {
+	const abortController = new AbortController();
+
+	setTimeout(() => {
+		abortController.abort();
+	}, 10);
+
+	await t.throwsAsync(pMapKeyed({a: delay(100)}, value => value, {signal: abortController.signal}), {name: 'AbortError'});
+});
+
+test('pMapKeyed - skips a key that a getter deletes before it is reached, like `Promise.allKeyed`', async t => {
+	const input = {
+		get a() {
+			delete input.b;
+			return 1;
+		},
+		b: 2,
+	};
+
+	t.deepEqual(await pMapKeyed(input, value => value), {a: 1});
+});
+
+test('pMapKeyed - rejects when reading a value throws', async t => {
+	await t.throwsAsync(pMapKeyed({
+		get a() {
+			throw new Error('getter');
+		},
+	}, value => value), {message: 'getter'});
+});
+
+test('pMapKeyed - validates the arguments', async t => {
+	for (const input of [null, undefined, 1, 'abc', Symbol('input')]) {
+		// eslint-disable-next-line no-await-in-loop
+		await t.throwsAsync(pMapKeyed(input, value => value), {instanceOf: TypeError, message: /Expected `input` to be an object/});
+	}
+
+	await t.throwsAsync(pMapKeyed({}, undefined), {instanceOf: TypeError, message: 'Mapper function is required'});
+	await t.throwsAsync(pMapKeyed({}, value => value, {concurrency: 0}), {instanceOf: TypeError});
+	await t.throwsAsync(pMapSettledKeyed(null, value => value), {instanceOf: TypeError, message: 'Expected `input` to be an object, got (null)'});
+	await t.throwsAsync(pMapSettledKeyed({a: 1}, undefined), {instanceOf: TypeError, message: 'Mapper function is required'});
+
+	// The input is checked first, then the mapper, then the options.
+	await t.throwsAsync(pMapKeyed(null, undefined, {concurrency: 0}), {instanceOf: TypeError, message: /Expected `input` to be an object/});
+	await t.throwsAsync(pMapKeyed({}, undefined, {concurrency: 0}), {instanceOf: TypeError, message: 'Mapper function is required'});
+	await t.throwsAsync(pMapSettledKeyed(new Map(), undefined, {concurrency: 0}), {instanceOf: TypeError, message: 'Mapper function is required'});
+});
+
+test('pMapKeyed - accepts any object, like `Promise.allKeyed`', async t => {
+	t.deepEqual(await pMapKeyed(['x', 'y'], value => value), {0: 'x', 1: 'y'});
+	t.deepEqual(await pMapKeyed(Object.assign(() => {}, {a: 1}), value => value), {a: 1});
+
+	// A `Set` keeps its values outside of its properties, so it has no keys.
+	t.deepEqual(await pMapKeyed(new Set([1]), value => value), {});
+});
+
+test('pMapKeyed - maps a `Map` into a `Map` with the same keys, in the same order', async t => {
+	const objectKey = {};
+	const mappedKeys = [];
+
+	const result = await pMapKeyed(new Map([
+		['b', Promise.resolve(1)],
+		[objectKey, 2],
+		[3, 3],
+		['skip', 4],
+	]), async (value, key) => {
+		mappedKeys.push(key);
+		await delay(10 - value);
+		return key === 'skip' ? pMapSkip : value * 10;
+	});
+
+	t.deepEqual(result, new Map([['b', 10], [objectKey, 20], [3, 30]]));
+	t.deepEqual(mappedKeys, ['b', objectKey, 3, 'skip']);
+});
+
+test('pMapKeyed - uses the entries of a `Map`, not its properties', async t => {
+	const map = new Map([['a', 1]]);
+	map.property = 2;
+
+	t.deepEqual(await pMapKeyed(map, value => value), new Map([['a', 1]]));
+});
+
+test('pMapKeyed - reads a `Map` up front, so a later change does not affect the result', async t => {
+	const map = new Map([['a', 1], ['b', 2]]);
+	const promise = pMapKeyed(map, async value => {
+		await delay(10);
+		return value;
+	}, {concurrency: 1});
+
+	map.set('c', 3);
+	map.delete('b');
+
+	t.deepEqual(await promise, new Map([['a', 1], ['b', 2]]));
+});
+
+test('pMapKeyed - `pMapStop` keeps the keys of a `Map` before it', async t => {
+	const result = await pMapKeyed(new Map([['a', 1], ['b', 2], ['c', 3]]), value => (value === 2 ? pMapStop : value));
+	t.deepEqual(result, new Map([['a', 1]]));
+});
+
+test('pMapKeyed - empty `Map`', async t => {
+	t.deepEqual(await pMapKeyed(new Map(), value => value), new Map());
+});
+
+test('pMapKeyed - empty object', async t => {
+	const result = await pMapKeyed({}, value => value);
+
+	t.is(Object.getPrototypeOf(result), null);
+	t.deepEqual(Reflect.ownKeys(result), []);
+});
+
+test('pMapSettledKeyed - settles each key into a null-prototype object', async t => {
+	const symbol = Symbol('symbol');
+	const valueError = new Error('value');
+	const mapperError = new Error('mapper');
+	const mappedKeys = [];
+
+	const result = await pMapSettledKeyed({
+		a: 1,
+		b: Promise.reject(valueError),
+		c: 3,
+		[symbol]: Promise.resolve(4),
+	}, async (value, key) => {
+		mappedKeys.push(key);
+
+		if (key === 'c') {
+			throw mapperError;
+		}
+
+		return value * 10;
+	}, {concurrency: 1});
+
+	t.is(Object.getPrototypeOf(result), null);
+	t.deepEqual(Reflect.ownKeys(result), ['a', 'b', 'c', symbol]);
+	t.deepEqual(result, {
+		a: fulfilled(10),
+		b: rejected(valueError),
+		c: rejected(mapperError),
+		[symbol]: fulfilled(40),
+	});
+	t.deepEqual(mappedKeys, ['a', 'c', symbol]);
+});
+
+test('pMapSettledKeyed - settles each key of a `Map` into a `Map`', async t => {
+	const valueError = new Error('value');
+	const mapperError = new Error('mapper');
+
+	const result = await pMapSettledKeyed(new Map([
+		['a', 1],
+		['b', Promise.reject(valueError)],
+		['c', 3],
+	]), (value, key) => {
+		if (key === 'c') {
+			throw mapperError;
+		}
+
+		return value;
+	}, {concurrency: 1});
+
+	t.deepEqual(result, new Map([['a', fulfilled(1)], ['b', rejected(valueError)], ['c', rejected(mapperError)]]));
+});
+
+test('pMapSettledKeyed - keeps a mapper error that is `undefined`', async t => {
+	// Thrown through a variable so the intent is not a bare `throw undefined`.
+	const thrown = undefined;
+
+	t.deepEqual(await pMapSettledKeyed({a: 1}, async () => {
+		throw thrown;
+	}), {a: rejected(thrown)});
+});
+
+test('pMapSettledKeyed - `pMapSkip` and `pMapStop`', async t => {
+	const error = new Error('b');
+
+	const result = await pMapSettledKeyed({a: 1, b: 2, c: 3, d: 4, e: 5}, (value, key) => {
+		if (key === 'a') {
+			return pMapSkip;
+		}
+
+		if (key === 'b') {
+			throw error;
+		}
+
+		return key === 'd' ? pMapStop : value;
+	}, {concurrency: 1});
+
+	t.deepEqual(result, {b: rejected(error), c: fulfilled(3)});
+});
+
+//
+// More pMap and pMapSettled tests
+//
+
+// A promise with its `resolve` and `reject` exposed, so the test decides when it settles.
+function createDeferred() {
+	let resolve;
+	let reject;
+	const promise = new Promise((resolve_, reject_) => {
+		resolve = resolve_;
+		reject = reject_;
+	});
+
+	return {promise, resolve, reject};
+}
+
+// Resolve with `value` after `count` microtask hops. It orders work without timers, so the order is the same on every run.
+async function afterMicrotasks(value, count) {
+	for (let step = 0; step < count; step++) {
+		await Promise.resolve(); // eslint-disable-line no-await-in-loop
+	}
+
+	return value;
+}
+
+// The reason a promise rejects with. `t.throwsAsync` only accepts an `Error`, so it cannot check a reason like a string or a symbol.
+async function getRejectionReason(promise) {
+	try {
+		await promise;
+	} catch (error) {
+		return error;
+	}
+
+	throw new Error('Expected the promise to reject');
+}
+
+// A Park-Miller random number generator, so a seed always gives the same numbers. It returns an integer from 0 up to `limit`, not including `limit`.
+function createSeededRandom(seed) {
+	let state = seed;
+
+	return limit => {
+		state = (state * 16_807) % 2_147_483_647;
+		return state % limit;
+	};
+}
+
+// Run `callback` and collect the unhandled rejections it causes. Only for `test.serial`, as the handler is process-wide.
+async function collectUnhandledRejections(callback) {
+	const unhandledRejections = [];
+	const onUnhandledRejection = reason => {
+		unhandledRejections.push(reason);
+	};
+
+	process.on('unhandledRejection', onUnhandledRejection);
+
+	try {
+		await callback();
+		await delay(10);
+		await drainEventLoop();
+	} finally {
+		process.off('unhandledRejection', onUnhandledRejection);
+	}
+
+	return unhandledRejections;
+}
+
+test('pMap - with `concurrency: 1`, pulls the next element only after the previous mapper settles', async t => {
+	const source = countingSource();
+	const {mapper: gated, release} = gatedMapper();
+	const started = [];
+
+	const promise = pMap(source, value => {
+		if (value === 3) {
+			return pMapStop;
+		}
+
+		started.push(value);
+		return gated(value);
+	}, {concurrency: 1});
+
+	await drainEventLoop();
+	t.deepEqual(started, [0]);
+	t.is(source.pulls, 1);
+
+	release(0);
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1]);
+	t.is(source.pulls, 2);
+
+	release(1);
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1, 2]);
+	t.is(source.pulls, 3);
+
+	release(2);
+	t.deepEqual(await promise, [0, 1, 2]);
+	t.is(source.pulls, 4);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMap - a finite concurrency starts exactly that many mappers, and each freed slot starts the next element in input order', async t => {
+	const source = countingSource();
+	const {mapper: gated, release} = gatedMapper();
+	const started = [];
+
+	const promise = pMap(source, value => {
+		if (value === 5) {
+			return pMapStop;
+		}
+
+		started.push(value);
+		return gated(value);
+	}, {concurrency: 3});
+
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1, 2]);
+	t.is(source.pulls, 3);
+
+	// The slots are freed out of input order, and the next element still goes to whichever slot is free.
+	release(2);
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1, 2, 3]);
+	t.is(source.pulls, 4);
+
+	release(0);
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1, 2, 3, 4]);
+	t.is(source.pulls, 5);
+
+	// The freed slot pulls the element that stops, and nothing after it, although two slots are free by then.
+	release(4);
+	await drainEventLoop();
+	t.is(source.pulls, 6);
+
+	release(3);
+	release(1);
+	t.deepEqual(await promise, [0, 1, 2, 3, 4]);
+	t.is(source.pulls, 6);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMap - an element that is still resolving holds its concurrency slot', async t => {
+	const firstElement = createDeferred();
+	let pulls = 0;
+
+	function * source() {
+		pulls++;
+		yield firstElement.promise;
+		pulls++;
+		yield 'b';
+		pulls++;
+		yield 'c';
+	}
+
+	const mappedValues = [];
+	const promise = pMap(source(), value => {
+		mappedValues.push(value);
+		return value.toUpperCase();
+	}, {concurrency: 1});
+
+	await drainEventLoop();
+	t.deepEqual(mappedValues, []);
+	t.is(pulls, 1);
+
+	firstElement.resolve('a');
+	t.deepEqual(await promise, ['A', 'B', 'C']);
+	t.deepEqual(mappedValues, ['a', 'b', 'c']);
+});
+
+test('pMap - calls the mapper as each element resolves, with its input index', async t => {
+	const elements = [createDeferred(), createDeferred(), createDeferred()];
+	const calls = [];
+
+	const promise = pMap(elements.map(element => element.promise), (value, index) => {
+		calls.push([value, index]);
+		return `${value}${index}`;
+	});
+
+	await drainEventLoop();
+	t.deepEqual(calls, []);
+
+	elements[2].resolve('c');
+	await drainEventLoop();
+	elements[0].resolve('a');
+	await drainEventLoop();
+	elements[1].resolve('b');
+
+	t.deepEqual(await promise, ['a0', 'b1', 'c2']);
+	t.deepEqual(calls, [['c', 2], ['a', 0], ['b', 1]]);
+});
+
+test('pMap - calls the mapper with only the element and its index', async t => {
+	t.deepEqual(await pMap(['a', 'b'], (...arguments_) => arguments_), [['a', 0], ['b', 1]]);
+
+	// The index is the second argument, so a function like `parseInt` reads it as the radix, as with `Array#map`.
+	t.deepEqual(await pMap(['10', '10', '10'], Number.parseInt), ['10', '10', '10'].map(Number.parseInt)); // eslint-disable-line unicorn/no-array-callback-reference
+});
+
+test('pMap - with infinite concurrency, starts the mapper of every element of an async source before any of them settles', async t => {
+	async function * source() {
+		for (let index = 0; index < 5; index++) {
+			yield index;
+		}
+	}
+
+	const {mapper: gated, release} = gatedMapper();
+	const started = [];
+
+	const promise = pMap(source(), value => {
+		started.push(value);
+		return gated(value);
+	});
+
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1, 2, 3, 4]);
+
+	for (const value of [4, 3, 2, 1, 0]) {
+		release(value);
+	}
+
+	t.deepEqual(await promise, [0, 1, 2, 3, 4]);
+});
+
+test('pMap - `stopOnError: true` rejects with the first error in time, like `Promise.all`', async t => {
+	const results = [createDeferred(), createDeferred(), createDeferred()];
+	const promise = pMap([0, 1, 2], (value, index) => results[index].promise, {concurrency: 3});
+
+	await drainEventLoop();
+
+	const laterElementError = new Error('later element');
+	results[2].reject(laterElementError);
+	const error = await t.throwsAsync(promise);
+	t.is(error, laterElementError);
+
+	// The earlier element failing afterwards does not change the rejection.
+	results[0].reject(new Error('earlier element'));
+	results[1].resolve();
+	await drainEventLoop();
+});
+
+test('pMap - after a rejection, a mapper that settles later does not pull more input, and the source is closed once', async t => {
+	const source = countingSource();
+	const results = new Map();
+
+	const promise = pMap(source, value => {
+		const result = createDeferred();
+		results.set(value, result);
+		return result.promise;
+	}, {concurrency: 2});
+
+	await drainEventLoop();
+	t.is(source.pulls, 2);
+
+	results.get(0).reject(new Error('first'));
+	await t.throwsAsync(promise, {message: 'first'});
+	t.is(source.returnCalls, 1);
+
+	results.get(1).resolve(1);
+	await drainEventLoop();
+	t.is(source.pulls, 2);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMap - `stopOnError: false` reports element errors and mapper errors together, in input order', async t => {
+	const element = createDeferred();
+	const mapperGate = createDeferred();
+
+	const promise = pMap([0, element.promise, 2, 3], async value => {
+		if (value === 0) {
+			await mapperGate.promise;
+			throw new Error('mapper 0');
+		}
+
+		if (value === 3) {
+			throw new Error('mapper 3');
+		}
+
+		return value;
+	}, {concurrency: 4, stopOnError: false});
+
+	// The errors settle in the order 3, 0, 1.
+	await drainEventLoop();
+	mapperGate.resolve();
+	await drainEventLoop();
+	element.reject(new Error('element 1'));
+
+	const error = await t.throwsAsync(promise, {instanceOf: AggregateError});
+	t.deepEqual(error.errors.map(({message}) => message), ['mapper 0', 'element 1', 'mapper 3']);
+});
+
+test('pMap - `stopOnError: false` with `concurrency: 1` still maps every element after an error', async t => {
+	const mappedValues = [];
+
+	const error = await t.throwsAsync(pMap([0, 1, 2, 3, 4], value => {
+		mappedValues.push(value);
+
+		if (value % 2 === 0) {
+			throw new Error(`error ${value}`);
+		}
+
+		return value;
+	}, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError});
+
+	t.deepEqual(mappedValues, [0, 1, 2, 3, 4]);
+	t.deepEqual(error.errors.map(({message}) => message), ['error 0', 'error 2', 'error 4']);
+});
+
+test('pMap - `stopOnError: false` with skips and a stop around the errors', async t => {
+	// Not `async`, so the mapper can return a promise of `pMapSkip` and a rejected promise as they are.
+	const mapper = value => {
+		switch (value) {
+			case 'skip promise': {
+				return Promise.resolve(pMapSkip);
+			}
+
+			case 'skip': {
+				return pMapSkip;
+			}
+
+			case 'stop': {
+				return pMapStop;
+			}
+
+			case 'after the stop': {
+				throw new Error('after the stop');
+			}
+
+			default: {
+				return value.startsWith('error') ? Promise.reject(new Error(value)) : value;
+			}
+		}
+	};
+
+	const error = await t.throwsAsync(pMap(['skip promise', 'error 1', 'skip', 'error 3', 'value', 'stop', 'after the stop'], mapper, {stopOnError: false}), {instanceOf: AggregateError});
+	t.deepEqual(error.errors.map(({message}) => message), ['error 1', 'error 3']);
+
+	t.deepEqual(await pMap(['skip promise', 'a', 'skip', 'b', 'stop', 'after the stop'], mapper, {stopOnError: false}), ['a', 'b']);
+});
+
+test('pMap - throwing `pMapSkip` or `pMapStop` is an error, not a skip or a stop', async t => {
+	for (const sentinel of [pMapSkip, pMapStop]) {
+		const mappedValues = [];
+
+		// eslint-disable-next-line no-await-in-loop
+		const reason = await getRejectionReason(pMap([1, 2, 3], value => {
+			mappedValues.push(value);
+
+			if (value === 2) {
+				throw sentinel;
+			}
+
+			return value;
+		}, {concurrency: 1}));
+
+		t.is(reason, sentinel);
+		t.deepEqual(mappedValues, [1, 2]);
+	}
+});
+
+test('pMap - rejects with a value that is not an `Error` as is', async t => {
+	const reasons = ['text', 42, {code: 'E_CUSTOM'}, Symbol('reason'), undefined, null];
+
+	for (const reason of reasons) {
+		// eslint-disable-next-line no-await-in-loop
+		t.is(await getRejectionReason(pMap([1], () => {
+			throw reason;
+		})), reason);
+
+		// eslint-disable-next-line no-await-in-loop
+		t.is(await getRejectionReason(pMap([1], () => Promise.reject(reason))), reason);
+
+		// eslint-disable-next-line no-await-in-loop
+		t.is(await getRejectionReason(pMap([Promise.reject(reason)], value => value)), reason);
+	}
+
+	const error = await t.throwsAsync(pMap(reasons, value => {
+		throw value;
+	}, {stopOnError: false}), {instanceOf: AggregateError});
+
+	t.is(error.errors.length, reasons.length);
+
+	for (const [index, reason] of reasons.entries()) {
+		t.is(error.errors[index], reason);
+	}
+});
+
+test('pMap - a mapper that throws synchronously rejects the promise, and `pMap` itself does not throw', async t => {
+	const error = new Error('sync');
+	let promise;
+
+	t.notThrows(() => {
+		promise = pMap([1, 2], value => {
+			if (value === 1) {
+				throw error;
+			}
+
+			return value;
+		});
+	});
+
+	t.is(await t.throwsAsync(promise), error);
+});
+
+test('pMap - awaits a thenable element and a thenable mapper result', async t => {
+	let thenCalls = 0;
+	const createThenable = value => ({
+		then(resolve) { // eslint-disable-line unicorn/no-thenable
+			thenCalls++;
+			setTimeout(() => {
+				resolve(value);
+			});
+		},
+	});
+
+	t.deepEqual(await pMap([createThenable('a'), 'b'], value => createThenable(value.toUpperCase()), {concurrency: 1}), ['A', 'B']);
+	t.is(thenCalls, 3);
+
+	const brokenThenable = {
+		then() { // eslint-disable-line unicorn/no-thenable
+			throw new Error('then failed');
+		},
+	};
+
+	await t.throwsAsync(pMap([brokenThenable], value => value), {message: 'then failed'});
+	await t.throwsAsync(pMap([1], () => brokenThenable), {message: 'then failed'});
+});
+
+test('pMap - maps a sparse array into a dense array, with `undefined` for the holes', async t => {
+	const sparse = [];
+	sparse[0] = 'a';
+	sparse[2] = 'c';
+	sparse.length = 4;
+
+	const indexes = [];
+	const result = await pMap(sparse, (value, index) => {
+		indexes.push(index);
+		return value;
+	}, {concurrency: 2});
+
+	t.deepEqual(result, ['a', undefined, 'c', undefined]);
+	t.is(Object.keys(result).length, 4);
+	t.deepEqual(indexes, [0, 1, 2, 3]);
+});
+
+test('pMap - maps other built-in iterables', async t => {
+	const identity = value => value;
+
+	// A string is iterated by code point, so a character outside the Basic Multilingual Plane is one element.
+	t.deepEqual(await pMap('a😀b', identity), ['a', '😀', 'b']);
+	t.deepEqual(await pMap(new Uint8Array([1, 2, 255]), value => value + 1), [2, 3, 256]);
+	t.deepEqual(await pMap(new Map([['a', 1], ['b', 2]]).keys(), identity), ['a', 'b']);
+	t.deepEqual(await pMap(new Set(['x', 'y']).entries(), identity), [['x', 'x'], ['y', 'y']]);
+	t.deepEqual(await pMap(['x', 'y'].entries(), identity, {concurrency: 1}), [[0, 'x'], [1, 'y']]);
+});
+
+test('pMap - ignores the return value of a generator, like `for...of`', async t => {
+	function * syncSource() {
+		yield 1;
+		yield 2;
+		return 3;
+	}
+
+	async function * asyncSource() {
+		yield 1;
+		yield 2;
+		return 3;
+	}
+
+	t.deepEqual(await pMap(syncSource(), value => value * 10, {concurrency: 2}), [10, 20]);
+	t.deepEqual(await pMap(asyncSource(), value => value * 10, {concurrency: 2}), [10, 20]);
+	t.deepEqual(await pMapSettled(syncSource(), value => value * 10), [fulfilled(10), fulfilled(20)]);
+});
+
+test('pMap - maps an async source whose `next()` returns thenables that are not promises', async t => {
+	let index = 0;
+
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					const result = index < 3 ? {done: false, value: index++} : {done: true, value: undefined};
+
+					return {
+						then(resolve) { // eslint-disable-line unicorn/no-thenable
+							resolve(result);
+						},
+					};
+				},
+			};
+		},
+	};
+
+	t.deepEqual(await pMap(source, value => value * 2, {concurrency: 2}), [0, 2, 4]);
+});
+
+test('pMap - rejects instead of hanging when the source `next()` returns something that is not an object', async t => {
+	for (const result of [undefined, null]) {
+		const source = {
+			[Symbol.iterator]() {
+				return {
+					next: () => result,
+				};
+			},
+		};
+
+		// eslint-disable-next-line no-await-in-loop
+		await t.throwsAsync(pMap(source, value => value), {instanceOf: TypeError});
+	}
+});
+
+test('pMap - maps 100k elements with a sync mapper and the default concurrency', async t => {
+	const length = 100_000;
+	const result = await pMap(Array.from({length}, (_, index) => index), value => value * 2);
+
+	t.is(result.length, length);
+	t.is(result[12_345], 24_690);
+	t.is(result.at(-1), (length - 1) * 2);
+});
+
+test('pMap - maps a 100k element sync generator where most results are skipped', async t => {
+	function * source() {
+		for (let index = 0; index < 100_000; index++) {
+			yield index;
+		}
+	}
+
+	const result = await pMap(source(), value => (value % 1000 === 0 ? value : pMapSkip), {concurrency: 3});
+	t.deepEqual(result, Array.from({length: 100}, (_, index) => index * 1000));
+});
+
+test('pMap - an endless sync source with the default concurrency stops when the first mapper throws', async t => {
+	const source = countingSource();
+
+	await t.throwsAsync(pMap(source, value => {
+		if (value === 0) {
+			throw new Error('first');
+		}
+
+		return value;
+	}), {message: 'first'});
+
+	const {pulls} = source;
+	t.true(pulls < 20, `pulled ${pulls} items`);
+	t.is(source.returnCalls, 1);
+
+	await drainEventLoop();
+	t.is(source.pulls, pulls);
+});
+
+test('pMap - rejects invalid `concurrency` values with a message that names the value', async t => {
+	const message = description => `Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got ${description}`;
+
+	for (const [concurrency, description] of [
+		[0, '`0` (number)'],
+		[-1, '`-1` (number)'],
+		[1.5, '`1.5` (number)'],
+		[Number.NaN, '`NaN` (number)'],
+		[Number.NEGATIVE_INFINITY, '`-Infinity` (number)'],
+		[Number.MAX_SAFE_INTEGER + 1, '`9007199254740992` (number)'],
+		['2', '`2` (string)'],
+		[null, '`null` (object)'],
+	]) {
+		// eslint-disable-next-line no-await-in-loop
+		await t.throwsAsync(pMap([1], value => value, {concurrency}), {instanceOf: TypeError, message: message(description)});
+		// eslint-disable-next-line no-await-in-loop
+		await t.throwsAsync(pMapSettled([1], value => value, {concurrency}), {instanceOf: TypeError, message: message(description)});
+	}
+
+	t.deepEqual(await pMap([1, 2], value => value, {concurrency: Number.MAX_SAFE_INTEGER}), [1, 2]);
+	t.deepEqual(await pMap([1, 2], value => value, {concurrency: undefined}), [1, 2]);
+});
+
+test('pMap - invalid arguments reject instead of throwing, and do not start iterating the input', async t => {
+	let iteratorCalls = 0;
+	const input = {
+		[Symbol.iterator]() {
+			iteratorCalls++;
+			return [1][Symbol.iterator]();
+		},
+	};
+
+	for (const [mapper, options, message] of [
+		[undefined, undefined, 'Mapper function is required'],
+		['not a function', undefined, 'Mapper function is required'],
+		[value => value, {concurrency: 0}, /concurrency/],
+	]) {
+		for (const method of [pMap, pMapSettled]) {
+			let promise;
+			t.notThrows(() => {
+				promise = method(input, mapper, options);
+			});
+
+			t.true(promise instanceof Promise);
+			// eslint-disable-next-line no-await-in-loop
+			await t.throwsAsync(promise, {instanceOf: TypeError, message});
+		}
+	}
+
+	t.is(iteratorCalls, 0);
+});
+
+test('pMap - an already aborted signal does not pull from the source or call the mapper', async t => {
+	for (const method of [pMap, pMapSettled]) {
+		const source = countingSource();
+		let mapperCalls = 0;
+
+		// eslint-disable-next-line no-await-in-loop
+		await t.throwsAsync(method(source, () => {
+			mapperCalls++;
+		}, {signal: AbortSignal.abort()}), {name: 'AbortError'});
+
+		t.is(source.pulls, 0);
+		t.is(mapperCalls, 0);
+	}
+});
+
+test('pMap - rejects with an abort reason that is not an `Error` as is', async t => {
+	const reason = {code: 'CANCELED'};
+	const abortController = new AbortController();
+	const never = () => new Promise(() => {});
+
+	const runs = [pMap([1, 2], never, {signal: abortController.signal}), pMapSettled([1, 2], never, {signal: abortController.signal})];
+	await drainEventLoop();
+	abortController.abort(reason);
+
+	for (const run of runs) {
+		// eslint-disable-next-line no-await-in-loop
+		t.is(await getRejectionReason(run), reason);
+	}
+
+	t.is(await getRejectionReason(pMap([1], value => value, {signal: AbortSignal.abort('already')})), 'already');
+});
+
+test('pMap - a mapper that aborts the signal stops the run at once', async t => {
+	const abortController = new AbortController();
+	const source = countingSource();
+	const mappedValues = [];
+
+	await t.throwsAsync(pMap(source, value => {
+		mappedValues.push(value);
+
+		if (value === 2) {
+			abortController.abort(new Error('found it'));
+		}
+
+		return value;
+	}, {concurrency: 1, signal: abortController.signal}), {message: 'found it'});
+
+	await drainEventLoop();
+	t.deepEqual(mappedValues, [0, 1, 2]);
+	t.is(source.pulls, 3);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMap - one signal shared by concurrent runs aborts all of them with the same reason', async t => {
+	const abortController = new AbortController();
+	const {signal} = abortController;
+	const reason = new Error('shutdown');
+	const never = () => new Promise(() => {});
+
+	const runs = [
+		pMap([1], never, {signal}),
+		pMapSettled([1], never, {signal}),
+		pMap([1, 2], never, {concurrency: 1, signal}),
+	];
+
+	await drainEventLoop();
+	t.is(abortListenerCount(signal), 3);
+
+	abortController.abort(reason);
+
+	for (const run of runs) {
+		// eslint-disable-next-line no-await-in-loop
+		t.is(await getRejectionReason(run), reason);
+	}
+
+	t.is(abortListenerCount(signal), 0);
+});
+
+test('pMap - sequential runs that share a signal never leave an abort listener behind, whichever way they settle', async t => {
+	const {signal} = new AbortController();
+
+	const runs = [
+		() => pMap([1, 2], value => value, {signal}),
+		() => pMap([1, pMapSkip], value => value, {signal}),
+		() => pMap([1, 2, 3], value => (value === 2 ? pMapStop : value), {signal}),
+		() => pMapSettled([1], () => {
+			throw new Error('settled');
+		}, {signal}),
+		() => pMap([1], () => {
+			throw new Error('rejected');
+		}, {signal}),
+		() => pMap([1, 2], () => {
+			throw new Error('aggregate');
+		}, {signal, stopOnError: false}),
+		() => pMap(new ThrowingIterator(5, 1), value => value, {signal}),
+	];
+
+	for (let round = 0; round < 3; round++) {
+		for (const run of runs) {
+			const promise = run();
+			t.is(abortListenerCount(signal), 1);
+			await promise.catch(() => {}); // eslint-disable-line no-await-in-loop
+			t.is(abortListenerCount(signal), 0);
+		}
+	}
+});
+
+test('pMap - rejects when an `AbortSignal.timeout()` fires', async t => {
+	await t.throwsAsync(pMap([1, 2], () => delay(500), {signal: AbortSignal.timeout(20)}), {name: 'TimeoutError'});
+});
+
+test.serial('pMap - elements and mappers that reject after the run has rejected are not unhandled rejections', async t => {
+	const unhandledRejections = await collectUnhandledRejections(async () => {
+		// Rejected by an abort while the elements are still pending.
+		const abortedElements = [createDeferred(), createDeferred()];
+		const abortController = new AbortController();
+		const abortedRun = pMap(abortedElements.map(element => element.promise), value => value, {signal: abortController.signal});
+		await drainEventLoop();
+		abortController.abort();
+		await t.throwsAsync(abortedRun, {name: 'AbortError'});
+
+		for (const element of abortedElements) {
+			element.reject(new Error('element after the abort'));
+		}
+
+		// Rejected by a mapper error while other elements and mappers are still pending.
+		const pendingElement = createDeferred();
+		const pendingMapper = createDeferred();
+		const firstMapperGate = createDeferred();
+		const failedRun = pMap([0, 1, pendingElement.promise], async value => {
+			if (value === 0) {
+				await firstMapperGate.promise;
+				throw new Error('first');
+			}
+
+			return pendingMapper.promise;
+		});
+
+		// Every element is reached before the first mapper throws.
+		await drainEventLoop();
+		firstMapperGate.resolve();
+		await t.throwsAsync(failedRun, {message: 'first'});
+		pendingElement.reject(new Error('element after the error'));
+		pendingMapper.reject(new Error('mapper after the error'));
+	});
+
+	t.deepEqual(unhandledRejections, []);
+});
+
+test('pMap - maps a Node.js readable stream, and destroys it when a mapper throws', async t => {
+	t.deepEqual(await pMap(Readable.from(['a', 'b', 'c']), async value => value.toUpperCase(), {concurrency: 2}), ['A', 'B', 'C']);
+
+	const stream = Readable.from(['a', 'b', 'c', 'd']);
+	await t.throwsAsync(pMap(stream, value => {
+		if (value === 'b') {
+			throw new Error('mapper');
+		}
+
+		return value;
+	}, {concurrency: 1}), {message: 'mapper'});
+
+	await drainEventLoop();
+	t.true(stream.destroyed);
+});
+
+test('pMapSettled - throwing `pMapSkip` or `pMapStop`, or an element that rejects with one, gives a rejected result', async t => {
+	const skip = pMapSkip;
+	const stop = pMapStop;
+	const mappedValues = [];
+
+	const results = await pMapSettled([1, 2, Promise.reject(stop), 4], value => {
+		mappedValues.push(value);
+
+		if (value === 1) {
+			throw skip;
+		}
+
+		if (value === 2) {
+			throw stop;
+		}
+
+		return value;
+	});
+
+	t.deepEqual(results, [rejected(pMapSkip), rejected(pMapStop), rejected(pMapStop), fulfilled(4)]);
+	t.deepEqual(mappedValues, [1, 2, 4]);
+});
+
+test('pMapSettled - keeps reasons that are not an `Error` as they are, from the mapper and from the input', async t => {
+	const reasonObject = {code: 'E_OBJECT'};
+	const reasons = ['text', 0, reasonObject, null];
+
+	const results = await pMapSettled([...reasons, Promise.reject(reasonObject)], value => {
+		throw value;
+	});
+
+	t.deepEqual(results, [...reasons, reasonObject].map(reason => rejected(reason)));
+	t.is(results[2].reason, reasonObject);
+	t.is(results[4].reason, reasonObject);
+});
+
+test('pMapSettled - a sync throw and a rejected promise from the mapper both give a rejected result, and the run goes on', async t => {
+	const syncError = new Error('sync');
+	const asyncError = new Error('async');
+
+	const results = await pMapSettled([0, 1, 2], value => {
+		if (value === 0) {
+			throw syncError;
+		}
+
+		if (value === 1) {
+			return Promise.reject(asyncError);
+		}
+
+		return value;
+	}, {concurrency: 1});
+
+	t.deepEqual(results, [rejected(syncError), rejected(asyncError), fulfilled(2)]);
+});
+
+test('pMapSettled - settles thenable elements and thenable mapper results', async t => {
+	const thenableError = new Error('thenable');
+	const resolvingThenable = value => ({
+		then(resolve) { // eslint-disable-line unicorn/no-thenable
+			resolve(value);
+		},
+	});
+	const rejectingThenable = {
+		then(resolve, reject) { // eslint-disable-line unicorn/no-thenable
+			reject(thenableError);
+		},
+	};
+
+	const results = await pMapSettled([resolvingThenable(1), rejectingThenable, 3, 4], value => (value === 3 ? rejectingThenable : resolvingThenable(value * 10)), {concurrency: 2});
+	t.deepEqual(results, [fulfilled(10), rejected(thenableError), rejected(thenableError), fulfilled(40)]);
+});
+
+test('pMapSettled - reads the source to its end, and does not close it, when every mapper fails', async t => {
+	let returnCalls = 0;
+	let nextCalls = 0;
+
+	const source = {
+		[Symbol.iterator]() {
+			let index = 0;
+			return {
+				next() {
+					nextCalls++;
+					return {done: index === 4, value: index++};
+				},
+				return() {
+					returnCalls++;
+					return {done: true, value: undefined};
+				},
+			};
+		},
+	};
+
+	const results = await pMapSettled(source, value => {
+		throw new Error(`error ${value}`);
+	}, {concurrency: 2});
+
+	t.deepEqual(results.map(result => result.reason.message), ['error 0', 'error 1', 'error 2', 'error 3']);
+	t.is(nextCalls, 5);
+	t.is(returnCalls, 0);
+});
+
+test('pMapSettled - `pMapStop` stops pulling, and closes the source once', async t => {
+	const source = countingSource();
+	const error = new Error('one');
+
+	const results = await pMapSettled(source, value => {
+		if (value === 1) {
+			throw error;
+		}
+
+		return value === 3 ? pMapStop : value;
+	}, {concurrency: 1});
+
+	t.deepEqual(results, [fulfilled(0), rejected(error), fulfilled(2)]);
+	t.is(source.pulls, 4);
+	t.is(source.returnCalls, 1);
+
+	await drainEventLoop();
+	t.is(source.pulls, 4);
+});
+
+test('pMapSettled - rejects when an async source rejects, even after rejected results', async t => {
+	const mappedValues = [];
+
+	async function * source() {
+		yield 1;
+		yield 2;
+		throw new Error('source failed');
+	}
+
+	await t.throwsAsync(pMapSettled(source(), value => {
+		mappedValues.push(value);
+		throw new Error('mapper');
+	}, {concurrency: 1}), {message: 'source failed'});
+
+	t.deepEqual(mappedValues, [1, 2]);
+});
+
+test('pMapSettled - settles 100k elements with the default concurrency', async t => {
+	const length = 100_000;
+	const error = new Error('every 10000th');
+
+	const results = await pMapSettled(Array.from({length}, (_, index) => index), value => {
+		if (value % 10_000 === 0) {
+			throw error;
+		}
+
+		return value;
+	});
+
+	t.is(results.length, length);
+	t.deepEqual(results[0], rejected(error));
+	t.deepEqual(results[1], fulfilled(1));
+	t.deepEqual(results.at(-1), fulfilled(length - 1));
+	t.is(results.filter(result => result.status === 'rejected').length, 10);
+});
+
+// Random plans for the element and the mapper of each position, from a seed, so a failure always reproduces. The timing comes from microtask hops, not timers, so it is the same on every run.
+function createRandomPlans(seed) {
+	const random = createSeededRandom(seed);
+	const kinds = ['value', 'promise', 'rejectedElement', 'mapperThrows', 'mapperRejects', 'thenable'];
+
+	return Array.from({length: 1 + random(30)}, (_, index) => ({
+		kind: kinds[random(kinds.length)],
+		reason: random(4) === 0 ? `reason ${index}` : new Error(`reason ${index}`),
+		elementHops: random(6),
+		mapperHops: random(6),
+		pullHops: random(6),
+	}));
+}
+
+// Create each element only when it is pulled, as an element that rejects before it is reached is a documented unhandled rejection.
+function createRandomPlanElement(plans, index) {
+	const plan = plans[index];
+
+	if (plan.kind === 'rejectedElement') {
+		return afterMicrotasks(undefined, plan.elementHops).then(() => {
+			throw plan.reason;
+		});
+	}
+
+	return plan.kind === 'promise' ? afterMicrotasks(index, plan.elementHops) : index;
+}
+
+function * randomPlansSource(plans) {
+	for (const index of plans.keys()) {
+		yield createRandomPlanElement(plans, index);
+	}
+}
+
+// An async source whose `next()` calls settle out of call order, after a random number of microtask hops each.
+function randomPlansAsyncSource(plans) {
+	let pullIndex = 0;
+
+	return {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					const index = pullIndex++;
+
+					if (index >= plans.length) {
+						return Promise.resolve({done: true, value: undefined});
+					}
+
+					return afterMicrotasks(undefined, plans[index].pullHops).then(() => ({done: false, value: createRandomPlanElement(plans, index)}));
+				},
+			};
+		},
+	};
+}
+
+// Not `async`, so a mapper can throw synchronously as well as return a promise that rejects later.
+function createRandomPlansMapper(plans) {
+	return (value, index) => {
+		const plan = plans[index];
+
+		if (value !== index) {
+			throw new Error(`The mapper got ${value} for index ${index}`);
+		}
+
+		if (plan.kind === 'mapperThrows') {
+			throw plan.reason;
+		}
+
+		const result = afterMicrotasks(value * 2, plan.mapperHops);
+
+		if (plan.kind === 'mapperRejects') {
+			return result.then(() => {
+				throw plan.reason;
+			});
+		}
+
+		if (plan.kind === 'thenable') {
+			return {
+				then(resolve) { // eslint-disable-line unicorn/no-thenable
+					result.then(resolve);
+				},
+			};
+		}
+
+		return result;
+	};
+}
+
+const settleRandomPlansNatively = plans => {
+	const mapper = createRandomPlansMapper(plans);
+	return Promise.allSettled(Array.from(randomPlansSource(plans), (element, index) => Promise.resolve(element).then(value => mapper(value, index))));
+};
+
+const randomPlanSeeds = [1, 7, 42, 1337, 2024, 65_535, 123_456_789];
+const randomPlanConcurrencies = [1, 2, 3, 7, Number.POSITIVE_INFINITY];
+
+test('pMapSettled - matches `Promise.allSettled` for random inputs and concurrencies', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomPlans(seed);
+		const expected = await settleRandomPlansNatively(plans); // eslint-disable-line no-await-in-loop
+		const expectedReasons = expected.map(result => result.reason);
+
+		for (const concurrency of randomPlanConcurrencies) {
+			for (const source of [randomPlansSource(plans), randomPlansAsyncSource(plans)]) {
+				const message = `seed ${seed}, concurrency ${concurrency}`;
+				const results = await pMapSettled(source, createRandomPlansMapper(plans), {concurrency}); // eslint-disable-line no-await-in-loop
+				t.deepEqual(results, expected, message);
+
+				// The same reason objects, not only equal ones.
+				t.true(results.every((result, index) => result.reason === expectedReasons[index]), message);
+			}
+		}
+	}
+});
+
+test('pMap - with `stopOnError: false`, agrees with `Promise.allSettled` for random inputs and concurrencies', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomPlans(seed);
+		const expected = await settleRandomPlansNatively(plans); // eslint-disable-line no-await-in-loop
+		const expectedReasons = expected.filter(result => result.status === 'rejected').map(result => result.reason);
+
+		for (const concurrency of randomPlanConcurrencies) {
+			for (const source of [randomPlansSource(plans), randomPlansAsyncSource(plans)]) {
+				const message = `seed ${seed}, concurrency ${concurrency}`;
+				const promise = pMap(source, createRandomPlansMapper(plans), {concurrency, stopOnError: false});
+
+				if (expectedReasons.length === 0) {
+					t.deepEqual(await promise, expected.map(result => result.value), message); // eslint-disable-line no-await-in-loop
+					continue;
+				}
+
+				const error = await t.throwsAsync(promise, {instanceOf: AggregateError}, message); // eslint-disable-line no-await-in-loop
+				t.is(error.errors.length, expectedReasons.length, message);
+
+				for (const [index, reason] of expectedReasons.entries()) {
+					t.is(error.errors[index], reason, message);
+				}
+			}
+		}
+	}
+});
+
+//
+// More pMapIterable tests
+//
+
+// An async source whose `next()` calls each wait for the test to settle them, through `source.pulls[n]`, so the test sees exactly when each element is read.
+function manualSource() {
+	const source = {
+		pulls: [],
+		returnCalls: 0,
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					const pull = createDeferred();
+					source.pulls.push(pull);
+					return pull.promise;
+				},
+				return() {
+					source.returnCalls++;
+					return Promise.resolve({done: true, value: undefined});
+				},
+			};
+		},
+	};
+
+	return source;
+}
+
+function * range(length) {
+	for (let index = 0; index < length; index++) {
+		yield index;
+	}
+}
+
+test('pMapIterable - does not open or read the input until the first `next()`', async t => {
+	let openCount = 0;
+	let pulls = 0;
+
+	const input = {
+		[Symbol.iterator]() {
+			openCount++;
+			let index = 0;
+			return {
+				next() {
+					pulls++;
+					return index < 3 ? {done: false, value: index++} : {done: true, value: undefined};
+				},
+			};
+		},
+	};
+
+	const iterator = pMapIterable(input, async value => value, {concurrency: 2})[Symbol.asyncIterator]();
+	await drainEventLoop();
+
+	t.is(openCount, 0);
+	t.is(pulls, 0);
+
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	t.is(openCount, 1);
+	t.deepEqual(await collectAsyncIterable(iterator), [1, 2]);
+});
+
+test('pMapIterable - `return()` before the first `next()` never opens the input', async t => {
+	let openCount = 0;
+	let mapperCalls = 0;
+
+	const input = {
+		[Symbol.iterator]() {
+			openCount++;
+			return [1, 2, 3][Symbol.iterator]();
+		},
+	};
+
+	const iterator = pMapIterable(input, value => {
+		mapperCalls++;
+		return value;
+	})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.return('early'), {done: true, value: 'early'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	await drainEventLoop();
+
+	t.is(openCount, 0);
+	t.is(mapperCalls, 0);
+});
+
+test('pMapIterable - `throw()` before the first `next()` rejects without opening the input', async t => {
+	let openCount = 0;
+
+	const input = {
+		[Symbol.iterator]() {
+			openCount++;
+			return [1, 2, 3][Symbol.iterator]();
+		},
+	};
+
+	const iterator = pMapIterable(input, value => value)[Symbol.asyncIterator]();
+
+	await t.throwsAsync(iterator.throw(new Error('early')), {message: 'early'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.is(openCount, 0);
+});
+
+test('pMapIterable - an input whose iterator method throws rejects the first `next()`', async t => {
+	let mapperCalls = 0;
+
+	const input = {
+		[Symbol.asyncIterator]() {
+			throw new Error('cannot open');
+		},
+	};
+
+	const iterator = pMapIterable(input, value => {
+		mapperCalls++;
+		return value;
+	})[Symbol.asyncIterator]();
+
+	await t.throwsAsync(iterator.next(), {message: 'cannot open'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.is(mapperCalls, 0);
+});
+
+test('pMapIterable - each `[Symbol.asyncIterator]()` call is an independent iteration with its own source iterator', async t => {
+	let openCount = 0;
+
+	const input = {
+		[Symbol.iterator]() {
+			openCount++;
+			return [1, 2, 3][Symbol.iterator]();
+		},
+	};
+
+	const iterable = pMapIterable(input, async value => value * 10, {concurrency: 1});
+	const first = iterable[Symbol.asyncIterator]();
+	const second = iterable[Symbol.asyncIterator]();
+	t.not(first, second);
+
+	// Stopping the first iteration early leaves the second one untouched.
+	t.deepEqual(await first.next(), {done: false, value: 10});
+	t.deepEqual(await first.return(), {done: true, value: undefined});
+	t.deepEqual(await collectAsyncIterable(second), [10, 20, 30]);
+
+	// And the iterable can be iterated again afterwards.
+	t.deepEqual(await collectAsyncIterable(iterable), [10, 20, 30]);
+	t.is(openCount, 3);
+});
+
+test('pMapIterable - a one-shot source is shared by every iteration of the result', async t => {
+	function * source() {
+		yield 1;
+		yield 2;
+		yield 3;
+		yield 4;
+	}
+
+	let mapperCalls = 0;
+	const mapper = async value => {
+		mapperCalls++;
+		return value;
+	};
+
+	// A generator object is its own iterator, so a second iteration continues where the first one left the generator.
+	const exhausted = pMapIterable(source(), mapper, {concurrency: 1});
+	t.deepEqual(await collectAsyncIterable(exhausted), [1, 2, 3, 4]);
+	t.deepEqual(await collectAsyncIterable(exhausted), []);
+	t.is(mapperCalls, 4);
+
+	// Breaking out of the first iteration closes the generator, so nothing is left for the second one, even though the generator had more elements.
+	const closed = pMapIterable(source(), mapper, {concurrency: 1});
+	for await (const value of closed) { // eslint-disable-line no-unreachable-loop
+		t.is(value, 1);
+		break;
+	}
+
+	t.deepEqual(await collectAsyncIterable(closed), []);
+});
+
+test('pMapIterable - concurrent `next()` calls settle in call order with `preserveOrder`', async t => {
+	const {mapper, release} = gatedMapper();
+	const iterator = pMapIterable([0, 1, 2], mapper, {concurrency: 3})[Symbol.asyncIterator]();
+
+	const settleOrder = [];
+	const results = [iterator.next(), iterator.next(), iterator.next(), iterator.next()].map(async (promise, callIndex) => {
+		const result = await promise;
+		settleOrder.push(callIndex);
+		return result;
+	});
+
+	await drainEventLoop();
+	release(2);
+	release(1);
+	await drainEventLoop();
+
+	// The later results are ready, but every call waits for the first element.
+	t.deepEqual(settleOrder, []);
+
+	release(0);
+	t.deepEqual(await Promise.all(results), [
+		{done: false, value: 0},
+		{done: false, value: 1},
+		{done: false, value: 2},
+		{done: true, value: undefined},
+	]);
+	t.deepEqual(settleOrder, [0, 1, 2, 3]);
+});
+
+test('pMapIterable - concurrent `next()` calls with `preserveOrder: false` get the results in the order they settle', async t => {
+	const {mapper, release} = gatedMapper();
+	const iterator = pMapIterable(['a', 'b', 'c'], mapper, {concurrency: 3, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const results = [iterator.next(), iterator.next(), iterator.next(), iterator.next()];
+	await drainEventLoop();
+
+	release('b');
+	t.deepEqual(await results[0], {done: false, value: 'b'});
+
+	release('c');
+	t.deepEqual(await results[1], {done: false, value: 'c'});
+
+	release('a');
+	t.deepEqual(await results[2], {done: false, value: 'a'});
+	t.deepEqual(await results[3], {done: true, value: undefined});
+});
+
+test('pMapIterable - many concurrent `next()` calls do not read past `backpressure`', async t => {
+	for (const preserveOrder of [true, false]) {
+		const source = countingSource();
+		const {mapper, release} = gatedMapper();
+		const started = [];
+
+		const iterator = pMapIterable(source, value => {
+			started.push(value);
+			return mapper(value);
+		}, {concurrency: 2, backpressure: 2, preserveOrder})[Symbol.asyncIterator]();
+
+		const results = Array.from({length: 10}, () => iterator.next());
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		// Ten requests for a result, but the stream still holds only `backpressure` elements.
+		t.deepEqual(started, [0, 1]);
+		t.is(source.pulls, 2);
+
+		release(0);
+		t.deepEqual(await results[0], {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		t.deepEqual(started, [0, 1, 2]);
+		t.is(source.pulls, 3);
+
+		const returned = iterator.return();
+		release(1);
+		release(2);
+		await Promise.all([...results, returned]); // eslint-disable-line no-await-in-loop
+		t.is(source.returnCalls, 1);
+	}
+});
+
+test('pMapIterable - `return()` twice closes the source once, and passes its value through', async t => {
+	const source = countingSource();
+	const iterator = pMapIterable(source, async value => value, {concurrency: 2})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	t.deepEqual(await iterator.return('first'), {done: true, value: 'first'});
+	t.deepEqual(await iterator.return('second'), {done: true, value: 'second'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.is(source.returnCalls, 1);
+});
+
+test('pMapIterable - `throw()` after a result closes the source once and stops all work', async t => {
+	const source = countingSource();
+	let mapperCalls = 0;
+
+	const iterator = pMapIterable(source, async value => {
+		mapperCalls++;
+		return value;
+	}, {concurrency: 2, backpressure: 4})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	await drainEventLoop();
+
+	const error = new Error('consumer error');
+	t.is(await t.throwsAsync(iterator.throw(error)), error);
+	t.is(source.returnCalls, 1);
+
+	const pullsAfterThrow = source.pulls;
+	const mapperCallsAfterThrow = mapperCalls;
+	await drainEventLoop();
+
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.is(source.pulls, pullsAfterThrow);
+	t.is(mapperCalls, mapperCallsAfterThrow);
+	t.is(source.returnCalls, 1);
+});
+
+// The same as for `return()`: the generator is suspended on the pending `next()`, so `throw()` has to stop the work before the generator gets to run its `finally`.
+test('pMapIterable - `throw()` while a `next()` is pending does not map the elements waiting for a mapper', async t => {
+	const source = countingSource();
+	const {mapper, release} = gatedMapper();
+	const started = [];
+
+	const iterator = pMapIterable(source, value => {
+		started.push(value);
+		return mapper(value);
+	}, {concurrency: 2, backpressure: 10})[Symbol.asyncIterator]();
+
+	const pending = iterator.next();
+	await drainEventLoop();
+
+	// Two running mappers, and two elements read ahead that wait for a mapper.
+	t.deepEqual(started, [0, 1]);
+	t.is(source.pulls, 4);
+
+	const error = new Error('consumer error');
+	const thrown = iterator.throw(error);
+	release(1);
+	await drainEventLoop();
+
+	// The freed mapper slot went to a waiting element, which was dropped instead of mapped, and nothing more was read.
+	t.deepEqual(started, [0, 1]);
+	t.is(source.pulls, 4);
+
+	release(0);
+	t.deepEqual(await pending, {done: false, value: 0});
+	t.is(await t.throwsAsync(thrown), error);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMapIterable - with `preserveOrder: false`, a mapper error stops new work at once, while the consumer is busy', async t => {
+	const source = countingSource();
+	const {mapper, release} = gatedMapper();
+	const started = [];
+
+	const iterator = pMapIterable(source, async value => {
+		started.push(value);
+		await mapper(value);
+
+		if (value === 1) {
+			throw new Error('mapper error 1');
+		}
+
+		return value;
+	}, {concurrency: 2, backpressure: 10, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1]);
+
+	release(0);
+	t.deepEqual(await first, {done: false, value: 0});
+	await drainEventLoop();
+
+	// The consumer holds the first result, and a waiting element took the freed mapper slot.
+	t.deepEqual(started, [0, 1, 2]);
+	const pullsBeforeError = source.pulls;
+
+	// The error settles while nobody is asking for a result.
+	release(1);
+	await drainEventLoop();
+
+	// The freed mapper slot is not used, and nothing more is read.
+	t.deepEqual(started, [0, 1, 2]);
+	t.is(source.pulls, pullsBeforeError);
+
+	await t.throwsAsync(iterator.next(), {message: 'mapper error 1'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.is(source.returnCalls, 1);
+	release(2);
+});
+
+// The readme's example: with `concurrency: 1`, `backpressure: 2` overlaps reading each element with mapping the one before it.
+test('pMapIterable - with `concurrency: 1` and `backpressure: 2`, reading the next element overlaps the running mapper', async t => {
+	const source = manualSource();
+	const {mapper, release} = gatedMapper();
+	const started = [];
+
+	const iterator = pMapIterable(source, value => {
+		started.push(value);
+		return mapper(value);
+	}, {concurrency: 1, backpressure: 2})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+	t.is(source.pulls.length, 1);
+
+	source.pulls[0].resolve({done: false, value: 0});
+	await drainEventLoop();
+
+	// The first element is being mapped, and the second one is read at the same time.
+	t.deepEqual(started, [0]);
+	t.is(source.pulls.length, 2);
+
+	source.pulls[1].resolve({done: false, value: 1});
+	await drainEventLoop();
+
+	// The second element waits for the mapper, and that fills `backpressure`, so nothing more is read.
+	t.deepEqual(started, [0]);
+	t.is(source.pulls.length, 2);
+
+	release(0);
+	t.deepEqual(await first, {done: false, value: 0});
+	await drainEventLoop();
+
+	// The waiting element got the mapper, and the third element is read while it is mapped.
+	t.deepEqual(started, [0, 1]);
+	t.is(source.pulls.length, 3);
+
+	source.pulls[2].resolve({done: true, value: undefined});
+	release(1);
+	t.deepEqual(await iterator.next(), {done: false, value: 1});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.is(source.pulls.length, 3);
+	t.is(source.returnCalls, 0);
+});
+
+test('pMapIterable - with `concurrency: 1`, at most one element waits for the mapper, whatever the `backpressure`', async t => {
+	for (const {backpressure, pullsWhileMapping, pullsAfterFirstResult} of [
+		// No read-ahead: the next element is read only once the consumer takes the result.
+		{backpressure: 1, pullsWhileMapping: 1, pullsAfterFirstResult: 2},
+		{backpressure: 2, pullsWhileMapping: 2, pullsAfterFirstResult: 3},
+		{backpressure: 3, pullsWhileMapping: 2, pullsAfterFirstResult: 3},
+		{backpressure: Number.POSITIVE_INFINITY, pullsWhileMapping: 2, pullsAfterFirstResult: 3},
+	]) {
+		const source = countingSource();
+		const {mapper, release} = gatedMapper();
+		const started = [];
+
+		const iterator = pMapIterable(source, value => {
+			started.push(value);
+			return mapper(value);
+		}, {concurrency: 1, backpressure})[Symbol.asyncIterator]();
+
+		const first = iterator.next();
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		t.deepEqual(started, [0]);
+		t.is(source.pulls, pullsWhileMapping, `backpressure: ${backpressure}`);
+
+		release(0);
+		t.deepEqual(await first, {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		t.deepEqual(started, [0, 1]);
+		t.is(source.pulls, pullsAfterFirstResult, `backpressure: ${backpressure}`);
+
+		const returned = iterator.return();
+		release(1);
+		await returned; // eslint-disable-line no-await-in-loop
+	}
+});
+
+test('pMapIterable - `backpressure` counts each element until the consumer takes its result', async t => {
+	for (const preserveOrder of [true, false]) {
+		const source = countingSource();
+		let mapperCalls = 0;
+
+		const iterator = pMapIterable(source, async value => {
+			mapperCalls++;
+			return value;
+		}, {concurrency: 2, backpressure: 5, preserveOrder})[Symbol.asyncIterator]();
+
+		t.deepEqual(await iterator.next(), {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+
+		// The result taken, plus `backpressure` results waiting for the consumer.
+		t.is(source.pulls, 6);
+		t.is(mapperCalls, 6);
+
+		// The waiting results do not start any more work while the consumer is idle.
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		t.is(source.pulls, 6);
+		t.is(mapperCalls, 6);
+
+		// Each result the consumer takes lets exactly one more element in.
+		for (let step = 1; step <= 3; step++) {
+			t.deepEqual(await iterator.next(), {done: false, value: step}); // eslint-disable-line no-await-in-loop
+			await drainEventLoop(); // eslint-disable-line no-await-in-loop
+			t.is(source.pulls, 6 + step);
+			t.is(mapperCalls, 6 + step);
+		}
+
+		await iterator.return(); // eslint-disable-line no-await-in-loop
+	}
+});
+
+test('pMapIterable - `backpressure: Infinity` lets the results pile up while the consumer is idle', async t => {
+	let mapperCalls = 0;
+
+	const iterator = pMapIterable(range(20), async value => {
+		mapperCalls++;
+		return value;
+	}, {concurrency: 1, backpressure: Number.POSITIVE_INFINITY})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	await drainEventLoop();
+
+	// Only one mapper at a time, but nothing stops the mapping from running ahead of the consumer.
+	t.is(mapperCalls, 20);
+	t.deepEqual(await collectAsyncIterable(iterator), Array.from({length: 19}, (_, index) => index + 1));
+});
+
+test('pMapIterable - with `preserveOrder`, a slow first element holds back the mapping once `backpressure` is full', async t => {
+	const {mapper, release} = gatedMapper();
+	const started = [];
+
+	const iterator = pMapIterable(range(10), value => {
+		started.push(value);
+		return value === 0 ? mapper(value) : value;
+	}, {concurrency: 3, backpressure: 3})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	// The two results after the first one are ready, but they wait behind it and fill `backpressure`, although the consumer is waiting and mappers are free.
+	t.deepEqual(started, [0, 1, 2]);
+
+	release(0);
+	t.deepEqual(await first, {done: false, value: 0});
+	await drainEventLoop();
+	t.deepEqual(started, [0, 1, 2, 3]);
+
+	t.deepEqual(await collectAsyncIterable(iterator), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+});
+
+test('pMapIterable - a skip-heavy stream never reads further ahead than `backpressure` allows', async t => {
+	let pulls = 0;
+
+	const source = {
+		[Symbol.iterator]() {
+			let index = 0;
+			return {
+				next() {
+					pulls++;
+					return index < 200 ? {done: false, value: index++} : {done: true, value: undefined};
+				},
+			};
+		},
+	};
+
+	const values = [];
+	const pullsAtEachValue = [];
+
+	for await (const value of pMapIterable(source, async value => (value % 50 === 49 ? value : pMapSkip), {concurrency: 2, backpressure: 4})) {
+		// Let everything that could start, start, while the consumer holds the result.
+		await drainEventLoop();
+		values.push(value);
+		pullsAtEachValue.push(pulls);
+	}
+
+	t.deepEqual(values, [49, 99, 149, 199]);
+	// The element yielded, plus the `backpressure` elements after it, and the last one also saw the `done`.
+	t.deepEqual(pullsAtEachValue, [54, 104, 154, 201]);
+});
+
+test('pMapIterable - an element whose promise is still pending counts towards the read-ahead limit', async t => {
+	const elements = Array.from({length: 6}, () => createDeferred());
+	let pulls = 0;
+
+	const source = {
+		[Symbol.iterator]() {
+			let index = 0;
+			return {
+				next() {
+					pulls++;
+					return index < elements.length ? {done: false, value: elements[index++].promise} : {done: true, value: undefined};
+				},
+			};
+		},
+	};
+
+	const started = [];
+	const iterator = pMapIterable(source, async value => {
+		started.push(value);
+		return value;
+	}, {concurrency: 2, backpressure: 100})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	// Both elements are still being read, so although `backpressure` allows far more, nothing else is read.
+	t.is(pulls, 2);
+	t.deepEqual(started, []);
+
+	elements[1].resolve(1);
+	await drainEventLoop();
+
+	// The second element is mapped, so one more element is read.
+	t.deepEqual(started, [1]);
+	t.is(pulls, 3);
+
+	for (const [index, element] of elements.entries()) {
+		element.resolve(index);
+	}
+
+	t.deepEqual(await first, {done: false, value: 0});
+	t.deepEqual(await collectAsyncIterable(iterator), [1, 2, 3, 4, 5]);
+});
+
+test('pMapIterable - a sync source that throws on the Nth `next()` yields the earlier results, throws, and is not pulled again', async t => {
+	for (const concurrency of [1, 2, 4, Number.POSITIVE_INFINITY]) {
+		const iterable = new ThrowingIterator(10, 3);
+		const values = [];
+
+		// eslint-disable-next-line no-await-in-loop
+		await t.throwsAsync(async () => {
+			for await (const value of pMapIterable(iterable, async value => value, {concurrency})) {
+				values.push(value);
+			}
+		}, {message: 'throwing on index 3'});
+
+		t.deepEqual(values, [0, 1, 2], `concurrency: ${concurrency}`);
+		t.is(iterable.index, 4, `concurrency: ${concurrency}`);
+	}
+});
+
+test('pMapIterable - an async source that rejects on the Nth `next()` yields the earlier results, throws, and is not pulled again', async t => {
+	for (const preserveOrder of [true, false]) {
+		let pulls = 0;
+
+		const source = {
+			[Symbol.asyncIterator]() {
+				return {
+					async next() {
+						const index = pulls++;
+
+						if (index === 2) {
+							throw new Error('pull 2 failed');
+						}
+
+						return {done: false, value: index};
+					},
+				};
+			},
+		};
+
+		const iterator = pMapIterable(source, async value => value * 10, {concurrency: 1, preserveOrder})[Symbol.asyncIterator]();
+
+		t.deepEqual(await iterator.next(), {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+		t.deepEqual(await iterator.next(), {done: false, value: 10}); // eslint-disable-line no-await-in-loop
+		await t.throwsAsync(iterator.next(), {message: 'pull 2 failed'}); // eslint-disable-line no-await-in-loop
+		t.deepEqual(await iterator.next(), {done: true, value: undefined}); // eslint-disable-line no-await-in-loop
+
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		t.is(pulls, 3);
+	}
+});
+
+test('pMapIterable - an input element that rejects is thrown at its position with `preserveOrder`, and when it settles without', async t => {
+	for (const preserveOrder of [true, false]) {
+		const element = createDeferred();
+		const mappedValues = [];
+
+		const iterator = pMapIterable([1, element.promise, 3], async value => {
+			mappedValues.push(value);
+			return value;
+		}, {concurrency: 3, preserveOrder})[Symbol.asyncIterator]();
+
+		t.deepEqual(await iterator.next(), {done: false, value: 1}); // eslint-disable-line no-await-in-loop
+
+		// Without `preserveOrder`, the result after the pending element does not wait for it.
+		if (!preserveOrder) {
+			t.deepEqual(await iterator.next(), {done: false, value: 3}); // eslint-disable-line no-await-in-loop
+		}
+
+		const error = new Error('element failed');
+		element.reject(error);
+
+		t.is(await t.throwsAsync(iterator.next()), error); // eslint-disable-line no-await-in-loop
+		t.deepEqual(await iterator.next(), {done: true, value: undefined}); // eslint-disable-line no-await-in-loop
+
+		// The rejected element never reaches the mapper.
+		t.deepEqual(mappedValues, [1, 3]);
+	}
+});
+
+test('pMapIterable - a mapper error keeps its identity, also when it is not an `Error`', async t => {
+	for (const preserveOrder of [true, false]) {
+		for (const isAsync of [true, false]) {
+			for (const thrown of [undefined, 'a string', {code: 42}, new Error('an error')]) {
+				const throwingMapper = value => {
+					if (value === 1) {
+						throw thrown;
+					}
+
+					return value;
+				};
+
+				const iterator = pMapIterable([0, 1, 2], isAsync ? async value => throwingMapper(value) : throwingMapper, {concurrency: 1, preserveOrder})[Symbol.asyncIterator]();
+
+				t.deepEqual(await iterator.next(), {done: false, value: 0}); // eslint-disable-line no-await-in-loop
+
+				t.is(await getRejectionReason(iterator.next()), thrown); // eslint-disable-line no-await-in-loop
+				t.deepEqual(await iterator.next(), {done: true, value: undefined}); // eslint-disable-line no-await-in-loop
+			}
+		}
+	}
+});
+
+test('pMapIterable - `preserveOrder: false` yields the results that settled before an error, even when the consumer was not waiting', async t => {
+	const {mapper, release} = gatedMapper();
+
+	const iterator = pMapIterable([0, 1, 2, 3], async value => {
+		await mapper(value);
+
+		if (value === 2) {
+			throw new Error('mapper error 2');
+		}
+
+		return value;
+	}, {concurrency: 4, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	release(1);
+	t.deepEqual(await first, {done: false, value: 1});
+
+	// Both settle while the consumer is not asking for anything.
+	release(0);
+	await drainEventLoop();
+	release(2);
+	await drainEventLoop();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	await t.throwsAsync(iterator.next(), {message: 'mapper error 2'});
+
+	// The element still pending at the error is dropped.
+	release(3);
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - after a mapper error, the stream is done, the source is closed once, and nothing more is pulled', async t => {
+	const source = countingSource();
+
+	const iterator = pMapIterable(source, async value => {
+		if (value === 2) {
+			throw new Error('mapper error 2');
+		}
+
+		return value;
+	}, {concurrency: 1})[Symbol.asyncIterator]();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 0});
+	t.deepEqual(await iterator.next(), {done: false, value: 1});
+	await t.throwsAsync(iterator.next(), {message: 'mapper error 2'});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+
+	await drainEventLoop();
+	t.is(source.pulls, 3);
+	t.is(source.returnCalls, 1);
+});
+
+test('pMapIterable - a source `return()` that throws synchronously or never settles does not affect the consumer', async t => {
+	const returnMethods = [
+		() => {
+			throw new Error('return failed');
+		},
+		() => new Promise(() => {}),
+	];
+
+	for (const returnMethod of returnMethods) {
+		let returnCalls = 0;
+
+		const source = {
+			[Symbol.iterator]() {
+				let index = 0;
+				return {
+					next: () => ({done: false, value: index++}),
+					return() {
+						returnCalls++;
+						return returnMethod();
+					},
+				};
+			},
+		};
+
+		for await (const value of pMapIterable(source, async value => value, {concurrency: 2})) { // eslint-disable-line no-unreachable-loop, no-await-in-loop
+			t.is(value, 0);
+			break;
+		}
+
+		t.is(returnCalls, 1);
+
+		// The consumer still gets the mapper error, not the error from `return()`.
+		// eslint-disable-next-line no-await-in-loop
+		await t.throwsAsync(collectAsyncIterable(pMapIterable(source, async () => {
+			throw new Error('mapper error');
+		}, {concurrency: 2})), {message: 'mapper error'});
+
+		t.is(returnCalls, 2);
+	}
+});
+
+test('pMapIterable - does not close a source that already reported `done`, even when the consumer breaks on the last result', async t => {
+	for (const preserveOrder of [true, false]) {
+		let returnCalls = 0;
+
+		const source = {
+			[Symbol.iterator]() {
+				let index = 0;
+				return {
+					next: () => (index < 3 ? {done: false, value: index++} : {done: true, value: undefined}),
+					return() {
+						returnCalls++;
+						return {done: true, value: undefined};
+					},
+				};
+			},
+		};
+
+		for await (const value of pMapIterable(source, async value => value, {concurrency: 1, preserveOrder})) { // eslint-disable-line no-await-in-loop
+			if (value === 2) {
+				// Let the pull after the last element report `done` before breaking.
+				await drainEventLoop();
+				break;
+			}
+		}
+
+		t.is(returnCalls, 0);
+	}
+});
+
+test.serial('pMapIterable - no unhandled rejection from mappers or input elements that reject after the consumer breaks', async t => {
+	const unhandledRejections = await collectUnhandledRejections(async () => {
+		for (const preserveOrder of [true, false]) {
+			const element = createDeferred();
+			const mapperGate = createDeferred();
+
+			for await (const value of pMapIterable([0, 1, element.promise], async value => { // eslint-disable-line no-unreachable-loop, no-await-in-loop
+				if (value === 1) {
+					await mapperGate.promise;
+					throw new Error('mapper error');
+				}
+
+				return value;
+			}, {concurrency: 3, preserveOrder})) {
+				t.is(value, 0);
+				break;
+			}
+
+			element.reject(new Error('element error'));
+			mapperGate.resolve();
+			await delay(20); // eslint-disable-line no-await-in-loop
+		}
+	});
+
+	t.deepEqual(unhandledRejections, []);
+});
+
+test('pMapIterable - pMapStop at the first element ends the stream without a result and closes the source once', async t => {
+	for (const preserveOrder of [true, false]) {
+		const source = countingSource();
+		const mappedValues = [];
+
+		// eslint-disable-next-line no-await-in-loop
+		t.deepEqual(await collectAsyncIterable(pMapIterable(source, value => {
+			mappedValues.push(value);
+			return pMapStop;
+		}, {concurrency: 1, preserveOrder})), []);
+
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		t.deepEqual(mappedValues, [0]);
+		t.is(source.pulls, 1);
+		t.is(source.returnCalls, 1);
+	}
+});
+
+test('pMapIterable - pMapStop with `preserveOrder: false` still yields the results that settled before it while the consumer was not waiting', async t => {
+	const {mapper, release} = gatedMapper();
+
+	const iterator = pMapIterable([0, 1, 2, 3], async value => {
+		await mapper(value);
+		return value === 1 ? pMapStop : value;
+	}, {concurrency: 4, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	release(3);
+	t.deepEqual(await first, {done: false, value: 3});
+
+	// The consumer is not asking: one result settles before the stop, and one after it.
+	release(2);
+	await drainEventLoop();
+	release(1);
+	await drainEventLoop();
+	release(0);
+	await drainEventLoop();
+
+	t.deepEqual(await iterator.next(), {done: false, value: 2});
+	t.deepEqual(await iterator.next(), {done: true, value: undefined});
+});
+
+test('pMapIterable - pMapSkip and pMapStop together, in both orders', async t => {
+	for (const preserveOrder of [true, false]) {
+		const mappedValues = [];
+
+		// eslint-disable-next-line no-await-in-loop
+		const result = await collectAsyncIterable(pMapIterable([1, pMapSkip, 3, pMapStop, 5], async value => {
+			mappedValues.push(value);
+			return value;
+		}, {concurrency: 1, preserveOrder}));
+
+		t.deepEqual(result, [1, 3]);
+		// Nothing after the stop is mapped.
+		t.deepEqual(mappedValues, [1, pMapSkip, 3, pMapStop]);
+	}
+});
+
+test('pMapIterable - the mapper `index` is the input position for an async source with read-ahead and skips', async t => {
+	async function * source() {
+		for (let index = 0; index < 10; index++) {
+			yield `v${index}`;
+		}
+	}
+
+	for (const preserveOrder of [true, false]) {
+		const indexes = [];
+
+		// eslint-disable-next-line no-await-in-loop
+		const result = await collectAsyncIterable(pMapIterable(source(), async (value, index) => {
+			indexes.push(index);
+
+			// Finish out of order.
+			for (let hop = 0; hop < 10 - index; hop++) {
+				await Promise.resolve(); // eslint-disable-line no-await-in-loop
+			}
+
+			return index % 2 === 1 ? pMapSkip : [value, index];
+		}, {concurrency: 3, backpressure: 6, preserveOrder}));
+
+		t.deepEqual(indexes.sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+		for (const [value, index] of result) {
+			t.is(value, `v${index}`);
+		}
+
+		t.deepEqual(result.map(([, index]) => index).sort((a, b) => a - b), [0, 2, 4, 6, 8]);
+
+		if (preserveOrder) {
+			t.deepEqual(result.map(([, index]) => index), [0, 2, 4, 6, 8]);
+		}
+	}
+});
+
+test('pMapIterable - a long stream yields every result, with any `backpressure`', async t => {
+	const length = 25_000;
+
+	for (const options of [
+		{concurrency: 1, backpressure: 1},
+		{concurrency: 4, backpressure: 64},
+		{concurrency: 1, backpressure: 1, preserveOrder: false},
+		{concurrency: 4, backpressure: 64, preserveOrder: false},
+	]) {
+		let count = 0;
+		let isInOrder = true;
+
+		for await (const value of pMapIterable(range(length), value => value, options)) { // eslint-disable-line no-await-in-loop
+			isInOrder &&= value === count;
+			count++;
+		}
+
+		t.is(count, length);
+		t.true(isInOrder, `${JSON.stringify(options)}`);
+	}
+});
+
+test('pMapIterable - a long run of skipped results neither stalls nor overflows the stack', async t => {
+	const length = 20_000;
+
+	for (const preserveOrder of [true, false]) {
+		// eslint-disable-next-line no-await-in-loop
+		t.deepEqual(await collectAsyncIterable(pMapIterable(range(length), value => (value === length - 1 ? value : pMapSkip), {concurrency: 2, backpressure: 4, preserveOrder})), [length - 1]);
+	}
+});
+
+test('pMapIterable - a long async source yields every result with `preserveOrder: false`', async t => {
+	async function * source() {
+		yield * range(20_000);
+	}
+
+	let count = 0;
+	let sum = 0;
+
+	for await (const value of pMapIterable(source(), async value => value, {concurrency: 4, backpressure: 8, preserveOrder: false})) {
+		count++;
+		sum += value;
+	}
+
+	t.is(count, 20_000);
+	t.is(sum, (20_000 * 19_999) / 2);
+});
+
+test('pMapIterable - the `backpressure` validation message', t => {
+	const message = (concurrency, backpressure, type) => `Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${type})`;
+
+	t.throws(() => pMapIterable([], () => {}, {backpressure: 0}), {instanceOf: TypeError, message: message('Infinity', '0', 'number')});
+	t.throws(() => pMapIterable([], () => {}, {concurrency: 1, backpressure: 0}), {instanceOf: TypeError, message: message(1, '0', 'number')});
+	t.throws(() => pMapIterable([], () => {}, {concurrency: 3, backpressure: '5'}), {instanceOf: TypeError, message: message(3, '5', 'string')});
+	t.throws(() => pMapIterable([], () => {}, {concurrency: 1, backpressure: Number.NaN}), {instanceOf: TypeError, message: message(1, 'NaN', 'number')});
+	t.throws(() => pMapIterable([], () => {}, {concurrency: 1, backpressure: Number.NEGATIVE_INFINITY}), {instanceOf: TypeError, message: message(1, '-Infinity', 'number')});
+	t.throws(() => pMapIterable([], () => {}, {concurrency: 1, backpressure: Number.MAX_SAFE_INTEGER + 1}), {instanceOf: TypeError, message: message(1, '9007199254740992', 'number')});
+	t.throws(() => pMapIterable([], () => {}, {concurrency: 4, backpressure: 3.5}), {instanceOf: TypeError, message: message(4, '3.5', 'number')});
+
+	t.notThrows(() => pMapIterable([], () => {}, {concurrency: 1, backpressure: Number.MAX_SAFE_INTEGER}));
+	// An explicit `undefined` is the default, `concurrency`.
+	t.notThrows(() => pMapIterable([], () => {}, {concurrency: 3, backpressure: undefined}));
+});
+
+test('pMapIterable - checks the input, the mapper, and `concurrency` before `backpressure`', t => {
+	t.throws(() => pMapIterable(123, () => {}, {concurrency: 2, backpressure: 1}), {message: 'Expected `input` to be either an `Iterable` or `AsyncIterable`, got (number)'});
+	t.throws(() => pMapIterable([], 'not a function', {concurrency: 2, backpressure: 1}), {message: 'Mapper function is required'});
+	t.throws(() => pMapIterable([], () => {}, {concurrency: 0, backpressure: 0}), {message: 'Expected `concurrency` to be an integer from 1 and up or `Infinity`, got `0` (number)'});
+});
+
+test('pMapIterable - breaking out of a chained stage closes the upstream stage and its source', async t => {
+	const source = countingSource();
+	let firstStageCalls = 0;
+	let secondStageCalls = 0;
+
+	const firstStage = pMapIterable(source, async value => {
+		firstStageCalls++;
+		return value * 2;
+	}, {concurrency: 2, backpressure: 4});
+
+	const secondStage = pMapIterable(firstStage, async value => {
+		secondStageCalls++;
+		return value + 1;
+	}, {concurrency: 2, backpressure: 4});
+
+	for await (const value of secondStage) { // eslint-disable-line no-unreachable-loop
+		t.is(value, 1);
+		break;
+	}
+
+	await drainEventLoop();
+	t.is(source.returnCalls, 1);
+
+	const counts = [source.pulls, firstStageCalls, secondStageCalls];
+	await drainEventLoop();
+	t.deepEqual([source.pulls, firstStageCalls, secondStageCalls], counts);
+});
+
+test('pMapIterable - an error in an upstream stage reaches the consumer after the earlier results', async t => {
+	const firstStage = pMapIterable([0, 1, 2, 3, 4], async value => {
+		if (value === 3) {
+			throw new Error('first stage error 3');
+		}
+
+		return value;
+	}, {concurrency: 2});
+
+	const values = [];
+
+	await t.throwsAsync(async () => {
+		for await (const value of pMapIterable(firstStage, async value => value * 10, {concurrency: 2})) {
+			values.push(value);
+		}
+	}, {message: 'first stage error 3'});
+
+	t.deepEqual(values, [0, 10, 20]);
+});
+
+test('pMapIterable - a slow downstream stage keeps an upstream stage from reading ahead', async t => {
+	const source = countingSource();
+	const {mapper, release} = gatedMapper();
+
+	const firstStage = pMapIterable(source, async value => value, {concurrency: 1, backpressure: 1});
+	const iterator = pMapIterable(firstStage, mapper, {concurrency: 1, backpressure: 1})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+	await drainEventLoop();
+
+	// The element the second stage maps, and the one result the first stage holds for it.
+	t.is(source.pulls, 2);
+
+	release(0);
+	t.deepEqual(await first, {done: false, value: 0});
+	await drainEventLoop();
+	t.is(source.pulls, 3);
+
+	const returned = iterator.return();
+	release(1);
+	await returned;
+	await drainEventLoop();
+	t.is(source.returnCalls, 1);
+});
+
+test('pMapIterable - a `pMap` that stops early closes the `pMapIterable` feeding it, and its source', async t => {
+	const source = countingSource();
+	let mapperCalls = 0;
+
+	const stage = pMapIterable(source, async value => {
+		mapperCalls++;
+		return value;
+	}, {concurrency: 2, backpressure: 4});
+
+	t.deepEqual(await pMap(stage, value => (value === 3 ? pMapStop : value), {concurrency: 1}), [0, 1, 2]);
+
+	await drainEventLoop();
+	t.is(source.returnCalls, 1);
+
+	const mapperCallsAfterStop = mapperCalls;
+	await drainEventLoop();
+	t.is(mapperCalls, mapperCallsAfterStop);
+});
+
+test('pMapIterable - awaits thenables, as input elements and as mapper results', async t => {
+	// eslint-disable-next-line unicorn/no-thenable
+	const thenable = value => ({then(resolve) {
+		resolve(value);
+	}});
+
+	for (const preserveOrder of [true, false]) {
+		// eslint-disable-next-line no-await-in-loop
+		const result = await collectAsyncIterable(pMapIterable([thenable(1), 2, thenable(3)], value => (value === 2 ? thenable(pMapSkip) : thenable(value * 10)), {concurrency: 1, preserveOrder}));
+		t.deepEqual(result, [10, 30]);
+	}
+});
+
+test('pMapIterable - the return value of a source generator is neither mapped nor yielded', async t => {
+	async function * asyncSource() {
+		yield 1;
+		return 'return value';
+	}
+
+	function * syncSource() {
+		yield 1;
+		return 'return value';
+	}
+
+	for (const source of [asyncSource, syncSource]) {
+		const mappedValues = [];
+
+		// eslint-disable-next-line no-await-in-loop
+		t.deepEqual(await collectAsyncIterable(pMapIterable(source(), async value => {
+			mappedValues.push(value);
+			return value;
+		}, {concurrency: 2})), [1]);
+
+		t.deepEqual(mappedValues, [1]);
+	}
+});
+
+//
+// More pMapKeyed and pMapSettledKeyed tests
+//
+
+test('pMapKeyed - starts exactly `concurrency` mappers, and one more each time one finishes', async t => {
+	const {mapper, release} = gatedMapper();
+	const startedKeys = [];
+
+	const promise = pMapKeyed({a: 'a', b: 'b', c: 'c', d: 'd', e: 'e'}, (value, key) => {
+		startedKeys.push(key);
+		return mapper(value);
+	}, {concurrency: 2});
+
+	await drainEventLoop();
+	t.deepEqual(startedKeys, ['a', 'b']);
+
+	release('b');
+	await drainEventLoop();
+	t.deepEqual(startedKeys, ['a', 'b', 'c']);
+
+	release('a');
+	await drainEventLoop();
+	t.deepEqual(startedKeys, ['a', 'b', 'c', 'd']);
+
+	release('d');
+	await drainEventLoop();
+	t.deepEqual(startedKeys, ['a', 'b', 'c', 'd', 'e']);
+
+	release('c');
+	release('e');
+
+	const result = await promise;
+	t.deepEqual(Object.keys(result), ['a', 'b', 'c', 'd', 'e']);
+	t.deepEqual(result, {a: 'a', b: 'b', c: 'c', d: 'd', e: 'e'});
+});
+
+test('pMapKeyed - with concurrency 1, calls the mapper in key order, even when the values resolve in reverse order', async t => {
+	const values = {a: createDeferred(), b: createDeferred(), c: createDeferred()};
+	const mappedKeys = [];
+
+	const promise = pMapKeyed({a: values.a.promise, b: values.b.promise, c: values.c.promise}, (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	}, {concurrency: 1});
+
+	values.c.resolve('c');
+	await drainEventLoop();
+	values.b.resolve('b');
+	await drainEventLoop();
+	t.deepEqual(mappedKeys, []);
+
+	values.a.resolve('a');
+
+	t.deepEqual(await promise, {a: 'a', b: 'b', c: 'c'});
+	t.deepEqual(mappedKeys, ['a', 'b', 'c']);
+});
+
+test('pMapKeyed - without a concurrency limit, a value that is still pending does not hold back the mappers of the later keys', async t => {
+	const first = createDeferred();
+	const mappedKeys = [];
+
+	const promise = pMapKeyed({a: first.promise, b: 'b', c: 'c'}, (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	});
+
+	await drainEventLoop();
+	t.deepEqual(mappedKeys, ['b', 'c']);
+
+	first.resolve('a');
+
+	const result = await promise;
+	t.deepEqual(mappedKeys, ['b', 'c', 'a']);
+	t.deepEqual(Object.keys(result), ['a', 'b', 'c']);
+});
+
+test('pMapKeyed - calls the mapper with only the value and the key', async t => {
+	const calls = [];
+	const mapper = (...arguments_) => {
+		calls.push(arguments_);
+		return arguments_[0];
+	};
+
+	await pMapKeyed({a: 1}, mapper);
+	await pMapKeyed(new Map([['b', 2]]), mapper);
+	await pMapSettledKeyed({c: 3}, mapper);
+	await pMapSettledKeyed(new Map([['d', 4]]), mapper);
+
+	t.deepEqual(calls, [[1, 'a'], [2, 'b'], [3, 'c'], [4, 'd']]);
+});
+
+test('pMapKeyed - reads every value before it returns', async t => {
+	const reads = [];
+	const input = {
+		get a() {
+			reads.push('a');
+			return 1;
+		},
+		get b() {
+			reads.push('b');
+			return 2;
+		},
+	};
+
+	const promise = pMapKeyed(input, value => value, {concurrency: 1});
+	t.deepEqual(reads, ['a', 'b']);
+
+	const settledPromise = pMapSettledKeyed(input, value => value, {concurrency: 1});
+	t.deepEqual(reads, ['a', 'b', 'a', 'b']);
+
+	t.deepEqual(await promise, {a: 1, b: 2});
+	t.deepEqual(await settledPromise, {a: fulfilled(1), b: fulfilled(2)});
+});
+
+test('pMapKeyed - a change to the input while the mappers run does not affect the result', async t => {
+	const input = {a: 1, b: 2};
+
+	const result = await pMapKeyed(input, (value, key) => {
+		if (key === 'a') {
+			input.a = 10;
+			delete input.b;
+			input.c = 3;
+		}
+
+		return value;
+	}, {concurrency: 1});
+
+	t.deepEqual(result, {a: 1, b: 2});
+	t.deepEqual(input, {a: 10, c: 3});
+});
+
+test('pMapKeyed - gives an extensible result with writable, enumerable, and configurable properties, even for a frozen or sealed input', async t => {
+	const result = await pMapKeyed(Object.freeze({a: 1}), value => value);
+
+	t.true(Object.isExtensible(result));
+	t.deepEqual(Object.getOwnPropertyDescriptor(result, 'a'), {value: 1, writable: true, enumerable: true, configurable: true});
+
+	const settledResult = await pMapSettledKeyed(Object.seal({b: 2}), value => value);
+
+	t.true(Object.isExtensible(settledResult));
+	t.deepEqual(Object.getOwnPropertyDescriptor(settledResult, 'b'), {value: fulfilled(2), writable: true, enumerable: true, configurable: true});
+});
+
+test('pMapKeyed - gives a new object or `Map` on each call, never the input', async t => {
+	const input = {a: 1};
+	const first = await pMapKeyed(input, value => value);
+	const second = await pMapKeyed(input, value => value);
+
+	t.not(first, input);
+	t.not(first, second);
+
+	first.a = 2;
+	t.is(second.a, 1);
+	t.is(input.a, 1);
+
+	const map = new Map([['a', 1]]);
+	const mapResult = await pMapKeyed(map, value => value);
+
+	t.not(mapResult, map);
+
+	mapResult.set('b', 2);
+	t.false(map.has('b'));
+});
+
+test('pMapKeyed - keys with special names keep their place, and the mapper gets them as strings', async t => {
+	const input = JSON.parse('{"b": 1, "01": 2, "-1": 3, "4294967295": 4, "4294967294": 5, "": 6, "constructor": 7, "hasOwnProperty": 8, "10": 9}');
+	const mappedKeys = [];
+
+	const result = await pMapKeyed(input, (value, key) => {
+		mappedKeys.push(key);
+		return value * 10;
+	}, {concurrency: 1});
+
+	// Only the array indexes, up to 2 ** 32 - 2, come first, in ascending order. The other numeric-like keys stay in insertion order.
+	const expectedKeys = ['10', '4294967294', 'b', '01', '-1', '4294967295', '', 'constructor', 'hasOwnProperty'];
+
+	t.deepEqual(Reflect.ownKeys(result), expectedKeys);
+	t.deepEqual(mappedKeys, expectedKeys);
+	t.is(result[''], 60);
+	t.is(result['01'], 20);
+	t.is(result.constructor, 70);
+	t.is(result.hasOwnProperty, 80);
+});
+
+test('pMapKeyed - a `then` key whose result is not a function is an ordinary key', async t => {
+	// eslint-disable-next-line unicorn/no-thenable
+	const result = await pMapKeyed({then: 1, a: 2}, value => value * 10);
+
+	t.deepEqual(Reflect.ownKeys(result), ['then', 'a']);
+	t.is(result.then, 10);
+	t.is(result.a, 20);
+});
+
+test('pMapSettledKeyed - each settled result is a plain object, and a mapper result that looks like one is still wrapped', async t => {
+	const error = new Error('b');
+	const result = await pMapSettledKeyed({a: 1, b: Promise.reject(error)}, () => rejected('not really'));
+
+	t.is(Object.getPrototypeOf(result), null);
+	t.is(Object.getPrototypeOf(result.a), Object.prototype);
+	t.is(Object.getPrototypeOf(result.b), Object.prototype);
+	t.deepEqual(result.a, fulfilled(rejected('not really')));
+	t.deepEqual(result.b, rejected(error));
+
+	const mapResult = await pMapSettledKeyed(new Map([['a', 1]]), () => fulfilled('not really'));
+
+	t.is(Object.getPrototypeOf(mapResult.get('a')), Object.prototype);
+	t.deepEqual(mapResult.get('a'), fulfilled(fulfilled('not really')));
+});
+
+test('pMapKeyed - a value that is `pMapSkip` or `pMapStop` is passed to the mapper like any other value', async t => {
+	const mappedValues = [];
+
+	const result = await pMapKeyed({a: pMapSkip, b: Promise.resolve(pMapStop), c: 3}, value => {
+		mappedValues.push(value);
+		return typeof value;
+	}, {concurrency: 1});
+
+	t.deepEqual(result, {a: 'symbol', b: 'symbol', c: 'number'});
+	t.deepEqual(mappedValues, [pMapSkip, pMapStop, 3]);
+
+	// Returned as is, they skip and stop.
+	t.deepEqual(await pMapKeyed({a: 1, b: pMapSkip, c: 3, d: pMapStop, e: 5}, value => value, {concurrency: 1}), {a: 1, c: 3});
+});
+
+test('pMapKeyed - a key that is `pMapSkip` or `pMapStop` is an ordinary key', async t => {
+	const result = await pMapKeyed({[pMapSkip]: 1, [pMapStop]: 2}, value => value * 10);
+
+	t.deepEqual(Reflect.ownKeys(result), [pMapSkip, pMapStop]);
+	t.is(result[pMapSkip], 10);
+	t.is(result[pMapStop], 20);
+
+	const mapResult = await pMapKeyed(new Map([[pMapStop, 1], [pMapSkip, 2]]), value => value * 10);
+
+	t.deepEqual([...mapResult], [[pMapStop, 10], [pMapSkip, 20]]);
+});
+
+test('pMapKeyed - a mapper result that is an entry, an array, or a `Map` is kept as the value', async t => {
+	const map = new Map([['x', 1]]);
+
+	const result = await pMapKeyed({a: 1, b: 2, c: 3}, (value, key) => {
+		if (key === 'a') {
+			return ['b', 'entry'];
+		}
+
+		if (key === 'b') {
+			return [];
+		}
+
+		return map;
+	});
+
+	t.deepEqual(Reflect.ownKeys(result), ['a', 'b', 'c']);
+	t.deepEqual(result.a, ['b', 'entry']);
+	t.deepEqual(result.b, []);
+	t.is(result.c, map);
+
+	const mapResult = await pMapKeyed(new Map([['a', 1]]), () => ['z', 2]);
+	t.deepEqual([...mapResult], [['a', ['z', 2]]]);
+});
+
+test('pMapKeyed - keeps a key whose mapper returns `undefined`', async t => {
+	const result = await pMapKeyed({a: 1, b: 2}, () => undefined);
+
+	t.deepEqual(Reflect.ownKeys(result), ['a', 'b']);
+	t.is(result.a, undefined);
+
+	const mapResult = await pMapKeyed(new Map([['a', 1]]), () => undefined);
+
+	t.true(mapResult.has('a'));
+	t.is(mapResult.size, 1);
+});
+
+test('pMapKeyed - skipping every key gives an empty null-prototype object or an empty `Map`', async t => {
+	const result = await pMapKeyed({a: 1, b: 2}, () => pMapSkip);
+
+	t.is(Object.getPrototypeOf(result), null);
+	t.deepEqual(Reflect.ownKeys(result), []);
+
+	const stoppedResult = await pMapKeyed({a: 1, b: 2}, () => pMapStop);
+	t.deepEqual(Reflect.ownKeys(stoppedResult), []);
+
+	const mapResult = await pMapKeyed(new Map([['a', 1]]), () => pMapSkip);
+
+	t.true(mapResult instanceof Map);
+	t.is(mapResult.size, 0);
+});
+
+test('pMapKeyed - a mapper that returns a promise of `pMapSkip` or a thenable of `pMapStop`', async t => {
+	const result = await pMapKeyed({a: 1, b: 2, c: 3, d: 4}, value => {
+		if (value === 2) {
+			return Promise.resolve(pMapSkip);
+		}
+
+		if (value === 3) {
+			return {
+				then(resolve) { // eslint-disable-line unicorn/no-thenable
+					resolve(pMapStop);
+				},
+			};
+		}
+
+		return value;
+	}, {concurrency: 1});
+
+	t.deepEqual(result, {a: 1});
+});
+
+test('pMapKeyed - a mapper that throws `pMapSkip` or `pMapStop` rejects, it does not skip or stop', async t => {
+	const skipReason = await getRejectionReason(pMapKeyed({a: 1}, () => {
+		throw pMapSkip;
+	}));
+
+	t.is(skipReason, pMapSkip);
+
+	const stopReason = await getRejectionReason(pMapKeyed({a: 1}, async () => {
+		throw pMapStop;
+	}));
+
+	t.is(stopReason, pMapStop);
+
+	const result = await pMapSettledKeyed({a: pMapSkip, b: pMapStop}, value => {
+		throw value;
+	});
+
+	t.deepEqual(result, {a: rejected(pMapSkip), b: rejected(pMapStop)});
+});
+
+test('pMapKeyed - a mapper that throws synchronously rejects the returned promise', async t => {
+	const error = new Error('sync');
+	let promise;
+
+	t.notThrows(() => {
+		promise = pMapKeyed({a: 1}, () => {
+			throw error;
+		});
+	});
+
+	await t.throwsAsync(promise, {is: error});
+});
+
+test('pMapKeyed - awaits a value through nested promises and thenables', async t => {
+	const nested = {
+		then(resolve) { // eslint-disable-line unicorn/no-thenable
+			resolve(Promise.resolve({
+				then(resolveInner) { // eslint-disable-line unicorn/no-thenable
+					resolveInner('deep');
+				},
+			}));
+		},
+	};
+
+	const mappedValues = [];
+
+	const result = await pMapKeyed({a: nested}, value => {
+		mappedValues.push(value);
+		return value;
+	});
+
+	t.deepEqual(result, {a: 'deep'});
+	t.deepEqual(mappedValues, ['deep']);
+});
+
+test('pMapKeyed - a value that is a thenable that throws rejects with the error, without calling the mapper for it', async t => {
+	const error = new Error('then');
+	const throwingThenable = {
+		then() { // eslint-disable-line unicorn/no-thenable
+			throw error;
+		},
+	};
+
+	const throwingGetterThenable = {
+		get then() { // eslint-disable-line unicorn/no-thenable
+			throw error;
+		},
+	};
+
+	const mappedKeys = [];
+	const mapper = (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	};
+
+	await t.throwsAsync(pMapKeyed({a: throwingThenable}, mapper), {is: error});
+	await t.throwsAsync(pMapKeyed({b: throwingGetterThenable}, mapper), {is: error});
+	t.deepEqual(mappedKeys, []);
+
+	t.deepEqual(await pMapSettledKeyed({c: throwingThenable, d: throwingGetterThenable, e: 5}, mapper), {
+		c: rejected(error),
+		d: rejected(error),
+		e: fulfilled(5),
+	});
+	t.deepEqual(mappedKeys, ['e']);
+});
+
+test('pMapKeyed - subscribes to a thenable value right away, before a mapper slot reaches it', async t => {
+	const {mapper, release} = gatedMapper();
+	let thenCallCount = 0;
+	const thenable = {
+		then(resolve) { // eslint-disable-line unicorn/no-thenable
+			thenCallCount++;
+			resolve('b');
+		},
+	};
+
+	const promise = pMapKeyed({a: 'a', b: thenable}, mapper, {concurrency: 1});
+
+	await drainEventLoop();
+	t.is(thenCallCount, 1);
+
+	release('a');
+	await drainEventLoop();
+	release('b');
+
+	t.deepEqual(await promise, {a: 'a', b: 'b'});
+	t.is(thenCallCount, 1);
+});
+
+test('pMapKeyed - stopOnError: false collects only the errors before a stop, in key order', async t => {
+	const valueError = new Error('value');
+	const mapperError = new Error('mapper');
+	const firstGate = createDeferred();
+
+	const promise = pMapKeyed({
+		a: 'a',
+		b: 'b',
+		c: Promise.reject(valueError),
+		d: 'd',
+		e: 'e',
+		f: Promise.reject(new Error('value after the stop')),
+	}, async (value, key) => {
+		if (key === 'a') {
+			// Settles last, so the run has to wait for it although the stop and the later errors came first.
+			await firstGate.promise;
+			throw mapperError;
+		}
+
+		if (key === 'b') {
+			return pMapSkip;
+		}
+
+		if (key === 'd') {
+			return pMapStop;
+		}
+
+		throw new Error('mapper after the stop');
+	}, {stopOnError: false});
+
+	await drainEventLoop();
+	firstGate.resolve();
+
+	const error = await t.throwsAsync(promise, {instanceOf: AggregateError});
+	t.is(error.errors.length, 2);
+	t.is(error.errors[0], mapperError);
+	t.is(error.errors[1], valueError);
+
+	// Only errors after the stop, so it resolves.
+	t.deepEqual(await pMapKeyed({a: 1, b: 2, c: Promise.reject(new Error('c'))}, value => (value === 2 ? pMapStop : value), {concurrency: 1, stopOnError: false}), {a: 1});
+});
+
+test('pMapKeyed - rejects with the first error to happen, not the first in key order, without waiting for the other mappers', async t => {
+	const firstGate = createDeferred();
+	let isFirstMapperDone = false;
+
+	const promise = pMapKeyed({a: 'a', b: 'b'}, async value => {
+		if (value === 'a') {
+			await firstGate.promise;
+			isFirstMapperDone = true;
+			throw new Error('a');
+		}
+
+		throw new Error('b');
+	});
+
+	await t.throwsAsync(promise, {message: 'b'});
+	t.false(isFirstMapperDone);
+
+	firstGate.resolve();
+	await drainEventLoop();
+	t.true(isFirstMapperDone);
+});
+
+test('pMapKeyed - with concurrency 1, no mapper runs after a value of a `Map` rejects', async t => {
+	const mappedKeys = [];
+
+	await t.throwsAsync(pMapKeyed(new Map([['a', 1], ['b', Promise.reject(new Error('b'))], ['c', 3]]), (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	}, {concurrency: 1}), {message: 'b'});
+
+	await drainEventLoop();
+	t.deepEqual(mappedKeys, ['a']);
+});
+
+test('pMapKeyed - stopOnError: false collects the errors of a `Map` in key order', async t => {
+	const objectKey = {};
+	const valueError = new Error('value');
+	const mapperError = new Error('mapper');
+	const value = createDeferred();
+
+	const promise = pMapKeyed(new Map([[objectKey, value.promise], ['b', 2], [3, 3]]), (value, key) => {
+		if (key === 3) {
+			throw mapperError;
+		}
+
+		return value;
+	}, {stopOnError: false});
+
+	// The mapper error happens first, the value of the first key rejects after it.
+	await drainEventLoop();
+	value.reject(valueError);
+
+	const error = await t.throwsAsync(promise, {instanceOf: AggregateError});
+	t.is(error.errors.length, 2);
+	t.is(error.errors[0], valueError);
+	t.is(error.errors[1], mapperError);
+});
+
+test('pMapKeyed - a `Map` subclass gives a plain `Map`', async t => {
+	class CustomMap extends Map {}
+
+	const result = await pMapKeyed(new CustomMap([['a', 1]]), value => value + 1);
+
+	t.is(Object.getPrototypeOf(result), Map.prototype);
+	t.deepEqual([...result], [['a', 2]]);
+
+	const settledResult = await pMapSettledKeyed(new CustomMap([['a', 1]]), value => value);
+
+	t.is(Object.getPrototypeOf(settledResult), Map.prototype);
+	t.deepEqual([...settledResult], [['a', fulfilled(1)]]);
+});
+
+test('pMapKeyed - passes on each key of a `Map` as is, with `NaN`, `-0` as `0`, and a promise key that is not awaited', async t => {
+	const promiseKey = Promise.resolve('not awaited');
+	const mappedKeys = [];
+
+	const result = await pMapKeyed(new Map([
+		[Number.NaN, 'nan'],
+		[-0, 'zero'],
+		[promiseKey, 'promise'],
+		[undefined, 'undefined'],
+		['1', 'string'],
+		[1, 'number'],
+	]), (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	}, {concurrency: 1});
+
+	t.true(Number.isNaN(mappedKeys[0]));
+	t.true(Object.is(mappedKeys[1], 0));
+	t.is(mappedKeys[2], promiseKey);
+	t.is(mappedKeys[3], undefined);
+	t.deepEqual(mappedKeys.slice(4), ['1', 1]);
+
+	t.is(result.size, 6);
+	t.is(result.get(Number.NaN), 'nan');
+	t.is(result.get(0), 'zero');
+	t.is(result.get(promiseKey), 'promise');
+	t.is(result.get(undefined), 'undefined');
+	t.is(result.get('1'), 'string');
+	t.is(result.get(1), 'number');
+});
+
+test('pMapKeyed - a `Map` from another realm is used as an object', async t => {
+	const map = vm.runInNewContext('new Map([["a", 1]])');
+	map.property = 2;
+
+	const result = await pMapKeyed(map, value => value * 10);
+
+	t.false(result instanceof Map);
+	t.is(Object.getPrototypeOf(result), null);
+	t.deepEqual(Reflect.ownKeys(result), ['property']);
+	t.is(result.property, 20);
+});
+
+test('pMapKeyed - an input that is a promise is not awaited, like `Promise.allKeyed`', async t => {
+	let mapperCallCount = 0;
+
+	const result = await pMapKeyed(Promise.resolve({a: 1}), value => {
+		mapperCallCount++;
+		return value;
+	});
+
+	t.is(Object.getPrototypeOf(result), null);
+	t.deepEqual(Reflect.ownKeys(result), []);
+	t.is(mapperCallCount, 0);
+});
+
+test('pMapKeyed - a string object, a typed array, and a sparse array give their own enumerable index keys', async t => {
+	t.deepEqual(await pMapKeyed(new String('ab'), value => value), {0: 'a', 1: 'b'}); // eslint-disable-line no-new-wrappers, unicorn/new-for-builtins
+	t.deepEqual(await pMapKeyed(new Uint8Array([5, 6]), value => value * 2), {0: 10, 1: 12});
+
+	// eslint-disable-next-line no-sparse-arrays
+	const sparseResult = await pMapKeyed([, 'b', , 'd'], value => value);
+	t.deepEqual(Reflect.ownKeys(sparseResult), ['1', '3']);
+});
+
+test('pMapKeyed - a class instance gives its own fields, not its methods or accessors', async t => {
+	class Example {
+		field = 1;
+
+		get accessor() {
+			return 2;
+		}
+
+		method() {
+			return 3;
+		}
+	}
+
+	const result = await pMapKeyed(new Example(), value => value);
+
+	t.deepEqual(Reflect.ownKeys(result), ['field']);
+	t.is(result.field, 1);
+});
+
+test('pMapKeyed - an object with its own `Symbol.iterator` is mapped by its keys, not iterated', async t => {
+	const input = {
+		a: 1,
+		* [Symbol.iterator]() {
+			yield ['b', 2];
+		},
+	};
+
+	const result = await pMapKeyed(input, value => typeof value);
+
+	t.false(result instanceof Map);
+	t.deepEqual(Reflect.ownKeys(result), ['a', Symbol.iterator]);
+	t.is(result.a, 'number');
+	t.is(result[Symbol.iterator], 'function');
+});
+
+test('pMapKeyed - puts the symbol keys after the string keys, even when a symbol was added first, and leaves out a non-enumerable symbol', async t => {
+	const first = Symbol('first');
+	const hidden = Symbol('hidden');
+	const input = {[first]: 1, b: 2};
+	input[1] = 3;
+	Object.defineProperty(input, hidden, {value: 4, enumerable: false});
+
+	const mappedKeys = [];
+
+	const result = await pMapKeyed(input, (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	}, {concurrency: 1});
+
+	t.deepEqual(Reflect.ownKeys(result), ['1', 'b', first]);
+	t.deepEqual(mappedKeys, ['1', 'b', first]);
+});
+
+test('pMapKeyed - maps an object with many keys, in key order', async t => {
+	const keyCount = 10_000;
+	const input = {};
+
+	for (let index = 0; index < keyCount; index++) {
+		input[`key${index}`] = index;
+	}
+
+	for (const concurrency of [1, 7, Number.POSITIVE_INFINITY]) {
+		// eslint-disable-next-line no-await-in-loop
+		const result = await pMapKeyed(input, value => value * 2, {concurrency});
+		const keys = Object.keys(result);
+
+		t.is(keys.length, keyCount);
+		t.true(keys.every((key, index) => key === `key${index}` && result[key] === index * 2));
+	}
+
+	const mapResult = await pMapKeyed(new Map(Object.entries(input)), async value => value * 2, {concurrency: 3});
+	let index = 0;
+	let isInOrder = mapResult.size === keyCount;
+
+	for (const [key, value] of mapResult) {
+		isInOrder &&= key === `key${index}` && value === index * 2;
+		index++;
+	}
+
+	t.true(isInOrder);
+});
+
+test.serial('pMapKeyed - a proxy trap that throws rejects, and the values read before it keep their handlers', async t => {
+	const mappedKeys = [];
+	const mapper = (value, key) => {
+		mappedKeys.push(key);
+		return value;
+	};
+
+	const createInput = () => new Proxy({a: Promise.reject(new Error('a')), b: 2, c: 3}, {
+		getOwnPropertyDescriptor(target, key) {
+			if (key === 'b') {
+				throw new Error('getOwnPropertyDescriptor');
+			}
+
+			return Reflect.getOwnPropertyDescriptor(target, key);
+		},
+	});
+
+	const unhandledRejections = await collectUnhandledRejections(async () => {
+		await t.throwsAsync(pMapKeyed(createInput(), mapper), {message: 'getOwnPropertyDescriptor'});
+		await t.throwsAsync(pMapSettledKeyed(createInput(), mapper), {message: 'getOwnPropertyDescriptor'});
+
+		await t.throwsAsync(pMapKeyed(new Proxy({a: 1}, {
+			ownKeys() {
+				throw new Error('ownKeys');
+			},
+		}), mapper), {message: 'ownKeys'});
+
+		const {proxy, revoke} = Proxy.revocable({a: 1}, {});
+		revoke();
+		await t.throwsAsync(pMapSettledKeyed(proxy, mapper), {instanceOf: TypeError});
+	});
+
+	t.deepEqual(unhandledRejections, []);
+	t.deepEqual(mappedKeys, []);
+});
+
+test.serial('pMapKeyed - an aborted signal still reads every value, never calls the mapper, and leaves no unhandled rejection', async t => {
+	const reason = new Error('aborted');
+	const signal = AbortSignal.abort(reason);
+	const reads = [];
+	let mapperCallCount = 0;
+
+	const createInput = () => ({
+		get a() {
+			reads.push('a');
+			return Promise.reject(new Error('a'));
+		},
+		get b() {
+			reads.push('b');
+			return 2;
+		},
+	});
+
+	const mapper = value => {
+		mapperCallCount++;
+		return value;
+	};
+
+	const unhandledRejections = await collectUnhandledRejections(async () => {
+		await t.throwsAsync(pMapKeyed(createInput(), mapper, {signal}), {is: reason});
+		await t.throwsAsync(pMapSettledKeyed(createInput(), mapper, {signal}), {is: reason});
+		await t.throwsAsync(pMapKeyed(new Map([['a', Promise.reject(new Error('map'))]]), mapper, {signal}), {is: reason});
+	});
+
+	t.deepEqual(reads, ['a', 'b', 'a', 'b']);
+	t.is(mapperCallCount, 0);
+	t.deepEqual(unhandledRejections, []);
+});
+
+for (const method of [pMapKeyed, pMapSettledKeyed]) {
+	for (const useMap of [false, true]) {
+		const inputType = useMap ? 'Map' : 'object';
+
+		test(`${method.name} - does not map a pending ${inputType} value after abort`, async t => {
+			const pendingValue = createDeferred();
+			const abortController = new AbortController();
+			const mappedKeys = [];
+			const input = {a: pendingValue.promise, b: 'b'};
+
+			const promise = method(useMap ? new Map(Object.entries(input)) : input, (value, key) => {
+				mappedKeys.push(key);
+				return value;
+			}, {signal: abortController.signal});
+
+			await drainEventLoop();
+			t.deepEqual(mappedKeys, ['b']);
+
+			const reason = new Error('aborted');
+			abortController.abort(reason);
+			await t.throwsAsync(promise, {is: reason});
+
+			pendingValue.resolve('a');
+			await drainEventLoop();
+			t.deepEqual(mappedKeys, ['b']);
+		});
+
+		test(`${method.name} - does not map pending ${inputType} values after a stop, but still maps earlier values`, async t => {
+			const earlierValue = createDeferred();
+			const laterValue = createDeferred();
+			const lastValue = createDeferred();
+			const mappedKeys = [];
+			const input = {a: earlierValue.promise, b: 'b', c: laterValue.promise, d: lastValue.promise};
+
+			const promise = method(useMap ? new Map(Object.entries(input)) : input, (value, key) => {
+				mappedKeys.push(key);
+				return key === 'b' ? pMapStop : value;
+			});
+
+			await drainEventLoop();
+			t.deepEqual(mappedKeys, ['b']);
+
+			laterValue.resolve('c');
+			await drainEventLoop();
+			t.deepEqual(mappedKeys, ['b']);
+
+			earlierValue.resolve('a');
+			const result = await promise;
+			const expected = {a: method === pMapSettledKeyed ? fulfilled('a') : 'a'};
+			t.deepEqual(result, useMap ? new Map(Object.entries(expected)) : expected);
+			t.deepEqual(mappedKeys, ['b', 'a']);
+
+			lastValue.resolve('d');
+			await drainEventLoop();
+			t.deepEqual(mappedKeys, ['b', 'a']);
+		});
+	}
+}
+
+test('pMapKeyed - an abort while a mapper runs rejects with the reason, starts no more mappers, and removes the listener', async t => {
+	const abortController = new AbortController();
+	const {mapper, release} = gatedMapper();
+	const startedKeys = [];
+
+	const promise = pMapKeyed({a: 'a', b: 'b', c: 'c'}, (value, key) => {
+		startedKeys.push(key);
+		return mapper(value);
+	}, {concurrency: 1, signal: abortController.signal});
+
+	await drainEventLoop();
+	t.is(abortListenerCount(abortController.signal), 1);
+
+	const reason = new Error('stop');
+	abortController.abort(reason);
+
+	await t.throwsAsync(promise, {is: reason});
+	t.is(abortListenerCount(abortController.signal), 0);
+
+	release('a');
+	await drainEventLoop();
+	t.deepEqual(startedKeys, ['a']);
+});
+
+test('pMapSettledKeyed - an abort rejects even when the keys before it have already settled', async t => {
+	const abortController = new AbortController();
+	const {mapper, release} = gatedMapper();
+	const settledKeys = [];
+
+	const promise = pMapSettledKeyed({a: 'a', b: 'b'}, async (value, key) => {
+		if (key === 'a') {
+			settledKeys.push(key);
+			throw new Error('a');
+		}
+
+		return mapper(value);
+	}, {signal: abortController.signal});
+
+	await drainEventLoop();
+	t.deepEqual(settledKeys, ['a']);
+
+	abortController.abort();
+
+	await t.throwsAsync(promise, {name: 'AbortError'});
+	release('b');
+});
+
+test('pMapSettledKeyed - ignores `stopOnError: false`', async t => {
+	const error = new Error('a');
+
+	const result = await pMapSettledKeyed({a: 1, b: 2}, (value, key) => {
+		if (key === 'a') {
+			throw error;
+		}
+
+		return value;
+	}, {stopOnError: false});
+
+	t.deepEqual(result, {a: rejected(error), b: fulfilled(2)});
+});
+
+test('pMapSettledKeyed - validates `concurrency`', async t => {
+	for (const concurrency of [0, -1, 1.5, '2', Number.NaN]) {
+		// eslint-disable-next-line no-await-in-loop
+		await t.throwsAsync(pMapSettledKeyed({a: 1}, value => value, {concurrency}), {instanceOf: TypeError, message: /Expected `concurrency`/});
+	}
+
+	t.deepEqual(await pMapSettledKeyed({a: 1}, value => value, {concurrency: Number.POSITIVE_INFINITY}), {a: fulfilled(1)});
+});
+
+test('pMapSettledKeyed - starts exactly `concurrency` mappers, and a mapper that throws frees its slot', async t => {
+	const gates = {a: createDeferred(), b: createDeferred(), c: createDeferred()};
+	const startedKeys = [];
+	const error = new Error('a');
+
+	const promise = pMapSettledKeyed({a: 'a', b: 'b', c: 'c'}, async (value, key) => {
+		startedKeys.push(key);
+		await gates[key].promise;
+
+		if (key === 'a') {
+			throw error;
+		}
+
+		return value;
+	}, {concurrency: 1});
+
+	await drainEventLoop();
+	t.deepEqual(startedKeys, ['a']);
+
+	gates.a.resolve();
+	await drainEventLoop();
+	t.deepEqual(startedKeys, ['a', 'b']);
+
+	gates.b.resolve();
+	gates.c.resolve();
+
+	t.deepEqual(await promise, {a: rejected(error), b: fulfilled('b'), c: fulfilled('c')});
+});
+
+test('pMapSettledKeyed - `pMapStop` waits for the keys before it, and drops the keys after it that settled first', async t => {
+	const error = new Error('a');
+	const firstGate = createDeferred();
+	let isSettled = false;
+
+	const promise = pMapSettledKeyed({a: 'a', b: 'b', c: 'c', d: Promise.reject(new Error('d'))}, async (value, key) => {
+		if (key === 'a') {
+			await firstGate.promise;
+			throw error;
+		}
+
+		if (key === 'b') {
+			return pMapStop;
+		}
+
+		return value;
+	});
+
+	promise.then(() => {
+		isSettled = true;
+	});
+
+	await drainEventLoop();
+	t.false(isSettled);
+
+	firstGate.resolve();
+
+	t.deepEqual(await promise, {a: rejected(error)});
+});
+
+test('pMapSettledKeyed - `pMapSkip` and `pMapStop` with a `Map`', async t => {
+	const error = new Error('b');
+
+	const result = await pMapSettledKeyed(new Map([
+		['a', 1],
+		['b', Promise.reject(error)],
+		['c', 3],
+		['d', 4],
+		['e', Promise.reject(new Error('after the stop'))],
+	]), (value, key) => {
+		if (key === 'a') {
+			return pMapSkip;
+		}
+
+		if (key === 'd') {
+			return pMapStop;
+		}
+
+		return value;
+	}, {concurrency: 1});
+
+	t.deepEqual(result, new Map([['b', rejected(error)], ['c', fulfilled(3)]]));
+});
+
+test('pMapSettledKeyed - keeps a rejection reason that is not an error as is', async t => {
+	const result = await pMapSettledKeyed({
+		a: Promise.reject(undefined), // eslint-disable-line prefer-promise-reject-errors
+		b: Promise.reject('reason'), // eslint-disable-line prefer-promise-reject-errors
+		c: {
+			then(resolve, reject) { // eslint-disable-line unicorn/no-thenable
+				reject(0);
+			},
+		},
+	}, value => value);
+
+	t.deepEqual(result, {a: rejected(undefined), b: rejected('reason'), c: rejected(0)});
+});
+
+test('pMapSettledKeyed - empty input', async t => {
+	let mapperCallCount = 0;
+	const mapper = value => {
+		mapperCallCount++;
+		return value;
+	};
+
+	const result = await pMapSettledKeyed({}, mapper);
+	t.is(Object.getPrototypeOf(result), null);
+	t.deepEqual(Reflect.ownKeys(result), []);
+
+	const mapResult = await pMapSettledKeyed(new Map(), mapper);
+	t.true(mapResult instanceof Map);
+	t.is(mapResult.size, 0);
+
+	t.is(mapperCallCount, 0);
+});
+
+test('pMapSettledKeyed - matches `Promise.allSettled` for random inputs', async t => {
+	const random = createSeededRandom(1337);
+
+	for (let round = 0; round < 60; round++) {
+		const kinds = Array.from({length: random(8)}, () => random(6));
+		const errors = kinds.map((kind, index) => new Error(`${index}`));
+		const concurrency = [1, 2, 3, Number.POSITIVE_INFINITY][random(4)];
+
+		const createValue = (kind, index) => {
+			switch (kind) {
+				case 0: {
+					return index;
+				}
+
+				case 1: {
+					return Promise.resolve(index);
+				}
+
+				case 2: {
+					return Promise.reject(errors[index]);
+				}
+
+				case 3: {
+					return {
+						then(resolve) { // eslint-disable-line unicorn/no-thenable
+							resolve(index);
+						},
+					};
+				}
+
+				case 4: {
+					return {
+						then() { // eslint-disable-line unicorn/no-thenable
+							throw errors[index];
+						},
+					};
+				}
+
+				default: {
+					return Promise.resolve().then(() => {
+						throw errors[index];
+					});
+				}
+			}
+		};
+
+		const createEntries = () => kinds.map((kind, index) => [`key${index}`, createValue(kind, index)]);
+
+		// eslint-disable-next-line no-await-in-loop
+		const settled = await Promise.allSettled(createEntries().map(([, value]) => value));
+		const expectedEntries = kinds.map((kind, index) => [`key${index}`, settled[index]]);
+
+		// eslint-disable-next-line no-await-in-loop
+		t.deepEqual(await pMapSettledKeyed(Object.fromEntries(createEntries()), value => value, {concurrency}), Object.fromEntries(expectedEntries));
+		// eslint-disable-next-line no-await-in-loop
+		t.deepEqual(await pMapSettledKeyed(new Map(createEntries()), value => value, {concurrency}), new Map(expectedEntries));
+
+		// Without a rejection, `pMapKeyed` matches `Promise.all`.
+		if (!kinds.some(kind => kind === 2 || kind >= 4)) {
+			// eslint-disable-next-line no-await-in-loop
+			const values = await Promise.all(createEntries().map(([, value]) => value));
+			// eslint-disable-next-line no-await-in-loop
+			t.deepEqual(await pMapKeyed(Object.fromEntries(createEntries()), value => value, {concurrency}), Object.fromEntries(kinds.map((kind, index) => [`key${index}`, values[index]])));
+		}
+	}
+});
+
+test('pMapIterable - a pull that rejects after the source reported `done` does not drop an element waiting for a mapper, without `preserveOrder`', async t => {
+	const source = manualSource();
+	const {mapper: gated, release} = gatedMapper();
+
+	// Elements 0 to 2 hold every mapper slot until they are released.
+	const valuesPromise = collectAsyncIterable(pMapIterable(source, value => (value < 3 ? gated(value) : value), {concurrency: 3, backpressure: Number.POSITIVE_INFINITY, preserveOrder: false}));
+
+	for (let pullIndex = 0; pullIndex < 3; pullIndex++) {
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		source.pulls[pullIndex].resolve({done: false, value: pullIndex});
+	}
+
+	await drainEventLoop();
+	t.is(source.pulls.length, 6);
+
+	// Element 3 waits for a mapper slot, pull 4 ends the source, and pull 5, which started before the end was known, rejects after it.
+	source.pulls[3].resolve({done: false, value: 3});
+	await drainEventLoop();
+	source.pulls[4].resolve({done: true, value: undefined});
+	await drainEventLoop();
+	source.pulls[5].reject(new Error('after the end'));
+	await drainEventLoop();
+
+	for (const value of [0, 1, 2]) {
+		release(value);
+	}
+
+	// `done` is final, like in `for await`, so the rejection after it is dropped, and every element before it is still mapped.
+	const values = await valuesPromise;
+	t.deepEqual(values.sort(), [0, 1, 2, 3]);
+});
+
+test('pMapIterable - a pull that rejects in the same tick as, but after, the `done` of an earlier pull does not drop an element waiting for a mapper, without `preserveOrder`', async t => {
+	const source = manualSource();
+	const {mapper: gated, release} = gatedMapper();
+
+	const valuesPromise = collectAsyncIterable(pMapIterable(source, value => (value < 3 ? gated(value) : value), {concurrency: 3, backpressure: Number.POSITIVE_INFINITY, preserveOrder: false}));
+
+	for (let pullIndex = 0; pullIndex < 3; pullIndex++) {
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		source.pulls[pullIndex].resolve({done: false, value: pullIndex});
+	}
+
+	await drainEventLoop();
+	source.pulls[3].resolve({done: false, value: 3});
+	await drainEventLoop();
+
+	// The worker of pull 5 handles its rejection before the slot of pull 5 is given back.
+	source.pulls[4].resolve({done: true, value: undefined});
+	source.pulls[5].reject(new Error('after the end'));
+	await drainEventLoop();
+
+	for (const value of [0, 1, 2]) {
+		release(value);
+	}
+
+	const values = await valuesPromise;
+	t.deepEqual(values.sort(), [0, 1, 2, 3]);
+});
+
+test('pMapIterable - a later `done` does not move the end of the source, so a pull that rejects between two `done` pulls is dropped, without `preserveOrder`', async t => {
+	const source = manualSource();
+	const {mapper: gated, release} = gatedMapper();
+
+	// Elements 0 to 3 hold every mapper slot until they are released.
+	const valuesPromise = collectAsyncIterable(pMapIterable(source, value => (value < 4 ? gated(value) : value), {concurrency: 4, backpressure: Number.POSITIVE_INFINITY, preserveOrder: false}));
+
+	for (let pullIndex = 0; pullIndex < 4; pullIndex++) {
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		source.pulls[pullIndex].resolve({done: false, value: pullIndex});
+	}
+
+	await drainEventLoop();
+	source.pulls[4].resolve({done: false, value: 4});
+	await drainEventLoop();
+	t.is(source.pulls.length, 8);
+
+	// Element 4 waits for a mapper slot. Pull 5 ends the source, pull 7 reports `done` again, and pull 6, between them, rejects last.
+	source.pulls[5].resolve({done: true, value: undefined});
+	await drainEventLoop();
+	source.pulls[7].resolve({done: true, value: undefined});
+	await drainEventLoop();
+	source.pulls[6].reject(new Error('after the end'));
+	await drainEventLoop();
+
+	for (const value of [0, 1, 2, 3]) {
+		release(value);
+	}
+
+	const values = await valuesPromise;
+	t.deepEqual(values.sort(), [0, 1, 2, 3, 4]);
+});
+
+test('pMapIterable - a pull that rejects before an earlier pull reports `done` still throws, without `preserveOrder`', async t => {
+	const source = manualSource();
+	const mapped = [];
+	const {mapper: gated, release} = gatedMapper();
+
+	const valuesPromise = collectAsyncIterable(pMapIterable(source, value => {
+		mapped.push(value);
+		return value < 3 ? gated(value) : value;
+	}, {concurrency: 3, backpressure: Number.POSITIVE_INFINITY, preserveOrder: false}));
+
+	for (let pullIndex = 0; pullIndex < 3; pullIndex++) {
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		source.pulls[pullIndex].resolve({done: false, value: pullIndex});
+	}
+
+	await drainEventLoop();
+	source.pulls[3].resolve({done: false, value: 3});
+	await drainEventLoop();
+
+	// The rejection settles first, so it is delivered.
+	source.pulls[5].reject(new Error('before the end'));
+	source.pulls[4].resolve({done: true, value: undefined});
+
+	await t.throwsAsync(valuesPromise, {message: 'before the end'});
+
+	for (const value of [0, 1, 2]) {
+		release(value);
+	}
+
+	await drainEventLoop();
+
+	// Element 3 was waiting for a mapper, so it is dropped.
+	t.deepEqual(mapped, [0, 1, 2]);
+});
+
+test('pMapIterable - a mapper error after the source reported `done` still stops an element waiting for a mapper, without `preserveOrder`', async t => {
+	const source = manualSource();
+	const mapped = [];
+	const releases = new Map();
+
+	const iterator = pMapIterable(source, value => {
+		mapped.push(value);
+
+		if (value >= 3) {
+			return value;
+		}
+
+		return new Promise((resolve, reject) => {
+			releases.set(value, {resolve, reject});
+		});
+	}, {concurrency: 3, backpressure: Number.POSITIVE_INFINITY, preserveOrder: false})[Symbol.asyncIterator]();
+
+	const first = iterator.next();
+
+	for (let pullIndex = 0; pullIndex < 3; pullIndex++) {
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		source.pulls[pullIndex].resolve({done: false, value: pullIndex});
+	}
+
+	await drainEventLoop();
+	source.pulls[3].resolve({done: false, value: 3});
+	await drainEventLoop();
+	source.pulls[4].resolve({done: true, value: undefined});
+	await drainEventLoop();
+
+	// The mapper of element 2 rejects after the end. Its slot is not given back, so the error is delivered and element 3 is not mapped.
+	releases.get(2).reject(new Error('mapper'));
+	await drainEventLoop();
+	t.deepEqual(mapped, [0, 1, 2]);
+
+	releases.get(0).resolve(0);
+	releases.get(1).resolve(1);
+	await drainEventLoop();
+	t.deepEqual(mapped, [0, 1, 2]);
+
+	await t.throwsAsync(first, {message: 'mapper'});
+});
+
+test('pMapIterable - a pull that rejects after the source reported `done` is dropped and does not drop an element waiting for a mapper, with `preserveOrder`', async t => {
+	const source = manualSource();
+	const {mapper: gated, release} = gatedMapper();
+
+	const valuesPromise = collectAsyncIterable(pMapIterable(source, value => (value < 3 ? gated(value) : value), {concurrency: 3, backpressure: Number.POSITIVE_INFINITY}));
+
+	for (let pullIndex = 0; pullIndex < 3; pullIndex++) {
+		await drainEventLoop(); // eslint-disable-line no-await-in-loop
+		source.pulls[pullIndex].resolve({done: false, value: pullIndex});
+	}
+
+	await drainEventLoop();
+	t.is(source.pulls.length, 6);
+
+	source.pulls[3].resolve({done: false, value: 3});
+	await drainEventLoop();
+	source.pulls[4].resolve({done: true, value: undefined});
+	await drainEventLoop();
+	source.pulls[5].reject(new Error('after the end'));
+	await drainEventLoop();
+
+	for (const value of [0, 1, 2]) {
+		release(value);
+	}
+
+	t.deepEqual(await valuesPromise, [0, 1, 2, 3]);
 });

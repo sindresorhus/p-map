@@ -1,4 +1,60 @@
-export default async function pMap(
+export default function pMap(iterable, mapper, options) {
+	return mapConcurrently(iterable, mapper, options, false);
+}
+
+export function pMapSettled(iterable, mapper, options) {
+	return mapConcurrently(iterable, mapper, options, true);
+}
+
+export function pMapKeyed(input, mapper, options) {
+	return mapKeyed(input, mapper, options, false);
+}
+
+export function pMapSettledKeyed(input, mapper, options) {
+	return mapKeyed(input, mapper, options, true);
+}
+
+// Like `Promise.allKeyed` and `Promise.allSettledKeyed`, with a mapper, and for a `Map` too. Each value travels with its key, so a skipped key, which leaves no slot in the result, cannot shift the keys after it.
+async function mapKeyed(input, mapper, options, isSettled) {
+	const entries = getKeyedEntries(input);
+
+	// After the values have their handlers, like the other argument errors, which `mapConcurrently` checks. It cannot check this one, as it gets the wrapper below as its mapper.
+	if (typeof mapper !== 'function') {
+		throw new TypeError('Mapper function is required');
+	}
+
+	const mappedEntries = await mapConcurrently(entries, async ([key, inputResult]) => {
+		try {
+			if (inputResult.status === 'rejected') {
+				throw inputResult.reason;
+			}
+
+			const result = await mapper(inputResult.value, key);
+
+			if (result === pMapSkip || result === pMapStop) {
+				return result;
+			}
+
+			return [key, isSettled ? {status: 'fulfilled', value: result} : result];
+		} catch (error) {
+			if (!isSettled) {
+				throw error;
+			}
+
+			return [key, {status: 'rejected', reason: error}];
+		}
+	}, options, false);
+
+	if (input instanceof Map) {
+		return new Map(mappedEntries);
+	}
+
+	// A null prototype, like `Promise.allKeyed`, so a key like `__proto__` or `toString` is an own property like any other.
+	return Object.setPrototypeOf(Object.fromEntries(mappedEntries), null);
+}
+
+// The engine behind all the functions, except `pMapIterable`. With `isSettled`, an element or a mapper that rejects gives a `{status: 'rejected'}` result instead of an error, like `Promise.allSettled`, so `stopOnError` does not apply.
+async function mapConcurrently(
 	iterable,
 	mapper,
 	{
@@ -6,6 +62,7 @@ export default async function pMap(
 		stopOnError = true,
 		signal,
 	} = {},
+	isSettled,
 ) {
 	return new Promise((resolve_, reject_) => {
 		validateOptions(iterable, mapper, concurrency);
@@ -166,18 +223,20 @@ export default async function pMap(
 						skippedCount++;
 					}
 
-					result[index] = value;
+					result[index] = isSettled && value !== pMapSkip ? {status: 'fulfilled', value} : value;
 				} catch (error) {
 					if (index >= doneIndex) {
 						return;
 					}
 
-					if (stopOnError) {
+					if (isSettled) {
+						result[index] = {status: 'rejected', reason: error};
+					} else if (stopOnError) {
 						reject(error);
 						return;
+					} else {
+						errors[index] = error;
 					}
-
-					errors[index] = error;
 				} finally {
 					pendingIndexes.delete(index);
 					settleIfFinished();
@@ -230,7 +289,7 @@ export function pMapIterable(
 ) {
 	validateOptions(iterable, mapper, concurrency);
 
-	if (!((Number.isSafeInteger(backpressure) && backpressure >= concurrency) || backpressure === Number.POSITIVE_INFINITY)) {
+	if (!isLimit(backpressure, concurrency)) {
 		throw new TypeError(`Expected \`backpressure\` to be an integer from \`concurrency\` (${concurrency}) and up or \`Infinity\`, got \`${backpressure}\` (${typeof backpressure})`);
 	}
 
@@ -251,6 +310,9 @@ export function pMapIterable(
 				let promises = [];
 				let headIndex = 0;
 				let isIterableDone = false;
+
+				// The lowest index whose pull reported `done`. Without `preserveOrder`, the pulls after it have their slots given back, so their errors are dropped.
+				let doneIndex = Number.POSITIVE_INFINITY;
 
 				// An element that is being read, or is waiting for a mapper, does not hold a mapper slot, so the next element can be read while the mappers run. Those elements have their own cap of `concurrency`, so the source never sees more than `concurrency` overlapping `next()` calls, even with `backpressure: Infinity`. `backpressure` caps everything in flight together.
 				let readingCount = 0;
@@ -276,24 +338,25 @@ export function pMapIterable(
 				// The lowest index whose mapper returned `pMapStop`, or, with `preserveOrder`, whose pull, element, or mapper threw. The stream ends there, like a `break` or a `throw` in a loop. Once it is set, nothing past it is pulled, and no pending element past it is mapped, while the earlier elements still finish and are yielded first. `isDone` cannot do this, as it would drop the values of the earlier elements too.
 				let stopIndex = Number.POSITIVE_INFINITY;
 
-				// Without `preserveOrder`, each spawn still takes a slot in `promises`, so `backpressure` counts the same, but the slots are filled in the order the workers settle rather than the order they were spawned in, so the consumer gets whichever result is ready first. A worker always fills the oldest empty slot, so the resolvers are used in spawn order.
-				const slotResolvers = new Map();
-				let slotCount = 0;
-				let filledSlotCount = 0;
+				// Without `preserveOrder`, each spawn still takes a slot in `promises`, so `backpressure` counts the same, but the slots are filled in the order the workers settle rather than the order they were spawned in, so the consumer gets whichever result is ready first. A worker always fills the oldest empty slot, at `fillIndex`. An empty slot is `undefined`, and a filled one holds the result itself rather than a promise, so a result costs a promise only when the consumer has to wait for it, through `wake`.
+				let fillIndex = 0;
+				let wake;
 
 				// The indexes of the pulls whose worker has not filled a slot yet, without `preserveOrder`.
 				const unfilledIndexes = new Set();
 
+				// The consumer waits only when the head is empty, and then the oldest empty slot is the head, so the first fill wakes it.
 				const fillSlot = result => {
-					slotResolvers.get(filledSlotCount)(result);
-					slotResolvers.delete(filledSlotCount++);
+					promises[fillIndex++] = result;
+					wake?.(result);
+					wake = undefined;
 				};
 
 				const pull = createPuller(iterator);
 
 				function trySpawn() {
 					// Do not spawn once the consumer is gone, the source is done, or the stream ends at an earlier element. The pull would be wasted work, and for a one-shot source, like a queue, it takes an item nobody is going to ask for.
-					if (isDone || isIterableDone || index > stopIndex || !(readingCount < concurrency && promises.length - headIndex < backpressure)) {
+					if (isDone || isIterableDone || index > stopIndex || readingCount >= concurrency || promises.length - headIndex >= backpressure) {
 						return;
 					}
 
@@ -313,6 +376,7 @@ export function pMapIterable(
 
 								if (done) {
 									isIterableDone = true;
+									doneIndex = Math.min(doneIndex, currentIndex);
 									return {done: true};
 								}
 
@@ -355,9 +419,10 @@ export function pMapIterable(
 							return {done: false, value: returnValue};
 						} catch (error) {
 							// With `preserveOrder`, the error is thrown at its own position, after the results before it, so those still finish. Without it, the error is thrown as soon as it settles, so nothing still pending can be yielded anymore.
+							// An error from a pull after the end of the source is dropped, as `done` is final, so it must have no effect. `doneIndex` is set before the worker that saw `done` settles, so its slot hand-back runs before the delivery check of any error that sees it here, and the two always agree.
 							if (preserveOrder) {
 								stopIndex = Math.min(stopIndex, currentIndex);
-							} else {
+							} else if (currentIndex < doneIndex) {
 								isDone = true;
 							}
 
@@ -370,13 +435,12 @@ export function pMapIterable(
 						return;
 					}
 
-					promises.push(new Promise(resolve => {
-						slotResolvers.set(slotCount++, resolve);
-					}));
+					promises.push(undefined);
 
 					unfilledIndexes.add(currentIndex);
 
 					// The worker never rejects, as errors are returned as a value.
+					// The slot is filled here, a tick after the worker settles, rather than by the worker itself, for the same reason the consumer awaits a filled slot: so the consumer never runs, and pulls, earlier.
 					promise.then(result => {
 						// The slot was already given back, as the pull came after the end of the source.
 						if (!unfilledIndexes.delete(currentIndex)) {
@@ -401,7 +465,11 @@ export function pMapIterable(
 
 				try {
 					while (headIndex < promises.length) {
-						const result = await promises[headIndex]; // eslint-disable-line no-await-in-loop
+						// Without `preserveOrder`, a filled slot holds the result itself, and it is still awaited. That takes one tick, like awaiting a settled promise, so the consumer, and its `trySpawn()`, never run earlier than with a promise in the slot. Taking a ready result without the tick can make the consumer pull before it sees a stop or the end of the source, and a one-shot source, like a queue, would lose that item.
+						// eslint-disable-next-line no-await-in-loop
+						const result = await (promises[headIndex] ?? new Promise(resolve => {
+							wake = resolve;
+						}));
 						const {done, value} = result;
 
 						// Release the entry instead of leaving it for a `shift()` to move, and drop the
@@ -414,6 +482,7 @@ export function pMapIterable(
 
 						if (headIndex * 2 >= promises.length) {
 							promises = promises.slice(headIndex);
+							fillIndex -= headIndex;
 							headIndex = 0;
 						}
 
@@ -483,7 +552,7 @@ export const pMapSkip = Symbol('skip');
 export const pMapStop = Symbol('stop');
 
 // The checks `pMap` and `pMapIterable` share, so both reject the same input the same way.
-// `pMap` runs this inside its promise, so a bad argument rejects rather than throws.
+// `mapConcurrently` runs this inside its promise, so a bad argument rejects rather than throws.
 function validateOptions(iterable, mapper, concurrency) {
 	// Optional chaining, so a nullish input gets this message rather than Node's internal
 	// "null is not iterable".
@@ -495,9 +564,45 @@ function validateOptions(iterable, mapper, concurrency) {
 		throw new TypeError('Mapper function is required');
 	}
 
-	if (!((Number.isSafeInteger(concurrency) && concurrency >= 1) || concurrency === Number.POSITIVE_INFINITY)) {
+	if (!isLimit(concurrency, 1)) {
 		throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`);
 	}
+}
+
+// Whether the value is an integer from `minimum` and up, or `Infinity`, as `concurrency` and `backpressure` must be.
+function isLimit(value, minimum) {
+	return (Number.isSafeInteger(value) && value >= minimum) || value === Number.POSITIVE_INFINITY;
+}
+
+// Read the entries of a `Map`, or else the own enumerable keys, strings and symbols, in the order and the way `Promise.allKeyed` does, all up front. Each value gets a handler right away, also like `Promise.allKeyed`, so a value that rejects before a mapper slot reaches it is not an unhandled rejection.
+function getKeyedEntries(input) {
+	if (input === null || (typeof input !== 'object' && typeof input !== 'function')) {
+		throw new TypeError(`Expected \`input\` to be an object, got (${input === null ? 'null' : typeof input})`);
+	}
+
+	const entries = [];
+
+	const addEntry = (key, value) => {
+		// Resolve the whole entry, so the engine checks termination after the value settles and before the mapper runs.
+		entries.push(Promise.resolve(value).then(
+			value => [key, {status: 'fulfilled', value}],
+			error => [key, {status: 'rejected', reason: error}],
+		));
+	};
+
+	if (input instanceof Map) {
+		for (const [key, value] of input) {
+			addEntry(key, value);
+		}
+	} else {
+		for (const key of Reflect.ownKeys(input)) {
+			if (Object.getOwnPropertyDescriptor(input, key)?.enumerable) {
+				addEntry(key, input[key]);
+			}
+		}
+	}
+
+	return entries;
 }
 
 // Take the async iterator when the input has both, like `for await` does.
