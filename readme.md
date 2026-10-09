@@ -247,6 +247,30 @@ const result = await pMap(input, throttle(mapper), {concurrency: 2});
 
 For more advanced scheduling, use [`p-queue`](https://github.com/sindresorhus/p-queue).
 
+### Dynamic concurrency
+
+To change the concurrency while mapping, compose the mapper with [`p-limit`](https://github.com/sindresorhus/p-limit), whose `concurrency` can be changed at any time:
+
+```js
+import pLimit from 'p-limit';
+import pMap from 'p-map';
+
+const limit = pLimit(2);
+
+// For example, raise it when the server is less busy
+setTimeout(() => {
+	limit.concurrency = 8;
+}, 10_000);
+
+try {
+	// The `concurrency` option is the highest value `limit.concurrency` can have
+	await pMap(input, (element, index) => limit(mapper, element, index), {concurrency: 8});
+} finally {
+	// Do not start the queued elements after a stop or an error
+	limit.clearQueue();
+}
+```
+
 ## Related
 
 - [p-all](https://github.com/sindresorhus/p-all) - Run promise-returning & async functions concurrently with optional limited concurrency
