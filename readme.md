@@ -159,6 +159,8 @@ for await (const post of pMapIterable(postIds, getPostMetadata, {concurrency: 8}
 
 > [!NOTE]
 > Like an async generator, a `return()` or `throw()` on the iterator that comes while a `next()` call is still pending waits for that `next()` to settle. A `break` in a `for await` loop is not affected, as the loop only stops between results. If `input` can block in `next()` for good, like a queue that waits for an item, stop it at the source, for example with an `AbortSignal` that it listens to.
+>
+> The iterable itself has no `Symbol.asyncDispose`, so `await using` on it throws a `TypeError`, and it can be iterated again, so there is no one iteration it could dispose. To get the cleanup of `await using` without a `for await` loop, apply it to the iterator from `[Symbol.asyncIterator]()`; on runtimes where async generators have `Symbol.asyncDispose`, closing that iterator closes the source, like on a real async generator.
 
 #### input
 

@@ -2990,6 +2990,52 @@ test('pMapIterable - does not call the mapper for input that arrives after the c
 	t.deepEqual(mappedValues, [0]);
 });
 
+// A still-pending mapper that resolves to `pMapSkip` after the consumer breaks frees a mapper slot.
+// Without the `isDone` check, that slot schedules a pull for the rest of the ready source, so the
+// whole remaining input would be mapped even though the consumer is gone.
+for (const preserveOrder of [true, false]) {
+	test(`pMapIterable - a pending mapper that resolves to \`pMapSkip\` after the consumer breaks does not map the rest of the source (${preserveOrder ? '' : 'un'}ordered)`, async t => {
+		let release;
+		const gate = new Promise(resolve => {
+			release = resolve;
+		});
+
+		let mapperCalls = 0;
+
+		async function * source() {
+			for (let index = 0; index < 1000; index++) {
+				yield index;
+			}
+		}
+
+		const iterator = pMapIterable(source(), async value => {
+			mapperCalls++;
+
+			if (value > 0) {
+				await gate;
+				return pMapSkip;
+			}
+
+			return value;
+		}, {concurrency: 2, backpressure: 2, preserveOrder})[Symbol.asyncIterator]();
+
+		for await (const value of iterator) { // eslint-disable-line no-unreachable-loop
+			t.is(value, 0);
+			break;
+		}
+
+		const startedBeforeBreak = mapperCalls;
+		await iterator.next();
+
+		release();
+		await delay(50);
+
+		// The pending mappers settled as skips, and nothing past them was pulled or mapped.
+		t.is(mapperCalls, startedBeforeBreak);
+		t.true(startedBeforeBreak > 0);
+	});
+}
+
 test('pMapIterable - does not call the mapper for promise input that settles after the consumer breaks', async t => {
 	let release;
 	const gate = new Promise(resolve => {
@@ -6056,6 +6102,422 @@ test('pMap - with `stopOnError: false`, agrees with `Promise.allSettled` for ran
 				}
 			}
 		}
+	}
+});
+
+// Like `createRandomPlans`, but the mapper can also skip or stop, which the other random plans never
+// do, so the tests below can cross-check the `pMapSkip` and `pMapStop` of every entry point at once.
+function createRandomControlPlans(seed) {
+	const random = createSeededRandom(seed);
+	const kinds = ['value', 'promise', 'rejectedElement', 'mapperThrows', 'mapperSkips', 'mapperStops'];
+
+	return Array.from({length: 1 + random(20)}, (_, index) => ({
+		kind: kinds[random(kinds.length)],
+		reason: random(4) === 0 ? `reason ${index}` : new Error(`reason ${index}`),
+		elementHops: random(6),
+		mapperHops: random(6),
+		pullHops: random(6),
+	}));
+}
+
+function createRandomControlMapper(plans) {
+	return (element, index) => {
+		const plan = plans[index];
+
+		if (plan.kind === 'mapperSkips') {
+			return afterMicrotasks(pMapSkip, plan.mapperHops);
+		}
+
+		if (plan.kind === 'mapperStops') {
+			return afterMicrotasks(pMapStop, plan.mapperHops);
+		}
+
+		if (plan.kind === 'mapperThrows') {
+			return afterMicrotasks(undefined, plan.mapperHops).then(() => {
+				throw plan.reason;
+			});
+		}
+
+		// Re-await, so a `promise` element settles first, like the mapper itself would.
+		return Promise.resolve(element).then(value => afterMicrotasks(value * 2, plan.mapperHops));
+	};
+}
+
+// The settled results every entry point must produce for the plan: the values and the rejected
+// results in input order, cut at the lowest `mapperStops`, with the `mapperSkips` left out.
+function getRandomControlExpected(plans) {
+	const expected = [];
+	const expectedReasons = [];
+
+	for (const [index, plan] of plans.entries()) {
+		if (plan.kind === 'mapperStops') {
+			break;
+		}
+
+		if (plan.kind === 'mapperSkips') {
+			continue;
+		}
+
+		if (plan.kind === 'rejectedElement' || plan.kind === 'mapperThrows') {
+			expected.push({status: 'rejected', reason: plan.reason});
+			expectedReasons.push(plan.reason);
+		} else {
+			expected.push({status: 'fulfilled', value: index * 2});
+		}
+	}
+
+	return {expected, expectedReasons};
+}
+
+// Every promise entry point must settle the same random plan the same way, including the skips and
+// stops the other random tests leave out, and over a source whose `next()` calls settle out of call
+// order. `pMapIterable` is left out because which error it throws first depends on timing. Each
+// source is one-shot, so every call gets its own from the plan factory.
+test('pMap, pMapSettled, pMapKeyed, and pMapSettledKeyed agree on random plans with skips and stops', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomControlPlans(seed);
+		const {expected, expectedReasons} = getRandomControlExpected(plans);
+		const expectedValues = expected.filter(result => result.status === 'fulfilled').map(result => result.value);
+
+		for (const concurrency of randomPlanConcurrencies) {
+			const message = `seed ${seed}, concurrency ${concurrency}`;
+
+			for (const makeSource of [randomPlansSource, randomPlansAsyncSource]) {
+				// eslint-disable-next-line no-await-in-loop
+				const settled = await pMapSettled(makeSource(plans), createRandomControlMapper(plans), {concurrency});
+				t.deepEqual(settled, expected, message);
+
+				const promise = pMap(makeSource(plans), createRandomControlMapper(plans), {concurrency, stopOnError: false});
+
+				if (expectedReasons.length > 0) {
+					// eslint-disable-next-line no-await-in-loop
+					const error = await t.throwsAsync(promise, {instanceOf: AggregateError}, message);
+					t.deepEqual(error.errors, expectedReasons, message);
+				} else {
+					// eslint-disable-next-line no-await-in-loop
+					t.deepEqual(await promise, expectedValues, message);
+				}
+			}
+
+			// The keyed variants read the values up front, so they cannot share the pull-driven source.
+			const objectInput = Object.fromEntries(plans.map((plan, index) => [`k${index}`, createRandomPlanElement(plans, index)]));
+			const keyedMapper = async (value, key) => createRandomControlMapper(plans)(value, Number(key.slice(1)));
+
+			// eslint-disable-next-line no-await-in-loop
+			const settledKeyed = await pMapSettledKeyed(objectInput, keyedMapper, {concurrency});
+			t.deepEqual(Object.values(settledKeyed), expected, message);
+
+			const keyedPromise = pMapKeyed(objectInput, keyedMapper, {concurrency, stopOnError: false});
+
+			if (expectedReasons.length > 0) {
+				// eslint-disable-next-line no-await-in-loop
+				const error = await t.throwsAsync(keyedPromise, {instanceOf: AggregateError}, message);
+				t.deepEqual(error.errors, expectedReasons, message);
+			} else {
+				// eslint-disable-next-line no-await-in-loop
+				t.deepEqual(Object.values(await keyedPromise), expectedValues, message);
+			}
+		}
+	}
+});
+
+// The keyed entry points agree on the same random plan for a `Map` input too, with the keys as they
+// are, which the object input of the test above does not exercise.
+test('pMapKeyed and pMapSettledKeyed agree on random plans with skips and stops for a `Map`', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomControlPlans(seed);
+		const {expected, expectedReasons} = getRandomControlExpected(plans);
+		const expectedValues = expected.filter(result => result.status === 'fulfilled').map(result => result.value);
+
+		const makeMap = () => new Map(plans.map((plan, index) => [index, createRandomPlanElement(plans, index)]));
+		const keyedMapper = async (value, key) => createRandomControlMapper(plans)(value, key);
+
+		for (const concurrency of randomPlanConcurrencies) {
+			const message = `seed ${seed}, concurrency ${concurrency}`;
+			// eslint-disable-next-line no-await-in-loop
+			const settled = await pMapSettledKeyed(makeMap(), keyedMapper, {concurrency});
+			t.deepEqual([...settled.values()], expected, message);
+
+			const promise = pMapKeyed(makeMap(), keyedMapper, {concurrency, stopOnError: false});
+
+			if (expectedReasons.length > 0) {
+				// eslint-disable-next-line no-await-in-loop
+				const error = await t.throwsAsync(promise, {instanceOf: AggregateError}, message);
+				t.deepEqual(error.errors, expectedReasons, message);
+			} else {
+				// eslint-disable-next-line no-await-in-loop
+				const keyedResult = await promise;
+				t.deepEqual([...keyedResult.values()], expectedValues, message);
+			}
+		}
+	}
+});
+
+// A plan without errors, so what `pMapIterable` yields does not depend on which error settles first.
+test('pMapIterable agrees with pMap on random plans with skips and stops and no errors', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomControlPlans(seed).filter(plan => plan.kind !== 'rejectedElement' && plan.kind !== 'mapperThrows');
+		const expectedValues = getRandomControlExpected(plans).expected.filter(result => result.status === 'fulfilled').map(result => result.value);
+
+		for (const concurrency of randomPlanConcurrencies) {
+			for (const makeSource of [randomPlansSource, randomPlansAsyncSource]) {
+				// eslint-disable-next-line no-await-in-loop
+				t.deepEqual(await collectAsyncIterable(pMapIterable(makeSource(plans), createRandomControlMapper(plans), {concurrency})), expectedValues, `seed ${seed}, concurrency ${concurrency}`);
+			}
+		}
+	}
+});
+
+// A stop drops the results that were not ready before it, so the unordered stream can yield fewer
+// results than the ordered one, and can even yield results past the stop that settled first.
+test('pMapIterable - `preserveOrder: false` yields only possible results, without duplicates, on random plans with skips and stops', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomControlPlans(seed).filter(plan => plan.kind !== 'rejectedElement' && plan.kind !== 'mapperThrows');
+		const hasStop = plans.some(plan => plan.kind === 'mapperStops');
+		const allValues = new Set();
+
+		for (const [index, plan] of plans.entries()) {
+			// A value from any position the mapper can reach, including past the stop, if it was
+			// ready before it.
+			if (plan.kind !== 'mapperSkips' && plan.kind !== 'mapperStops') {
+				allValues.add(index * 2);
+			}
+		}
+
+		for (const concurrency of randomPlanConcurrencies) {
+			// eslint-disable-next-line no-await-in-loop
+			const ordered = await collectAsyncIterable(pMapIterable(randomPlansAsyncSource(plans), createRandomControlMapper(plans), {concurrency}));
+			// eslint-disable-next-line no-await-in-loop
+			const unordered = await collectAsyncIterable(pMapIterable(randomPlansAsyncSource(plans), createRandomControlMapper(plans), {concurrency, preserveOrder: false}));
+
+			for (const value of unordered) {
+				t.true(allValues.has(value), `seed ${seed}, concurrency ${concurrency}, value ${value}`);
+			}
+
+			t.is(new Set(unordered).size, unordered.length, `seed ${seed}, concurrency ${concurrency}`);
+
+			if (!hasStop) {
+				t.deepEqual([...unordered].sort((a, b) => a - b), [...ordered].sort((a, b) => a - b), `seed ${seed}, concurrency ${concurrency}`);
+			}
+		}
+	}
+});
+
+// With `preserveOrder`, the error at the lowest input position below the stop is thrown, like a loop
+// that breaks at its first `throw`, whatever order the errors settle in.
+test('pMapIterable throws the first error in input order on random plans with skips, stops, and errors', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomControlPlans(seed);
+		const stopIndex = plans.findIndex(plan => plan.kind === 'mapperStops');
+		let errorIndex = -1;
+
+		for (const [index, plan] of plans.entries()) {
+			if (stopIndex !== -1 && index >= stopIndex) {
+				break;
+			}
+
+			if (plan.kind === 'rejectedElement' || plan.kind === 'mapperThrows') {
+				errorIndex = index;
+				break;
+			}
+		}
+
+		for (const concurrency of randomPlanConcurrencies) {
+			for (const makeSource of [randomPlansSource, randomPlansAsyncSource]) {
+				const promise = collectAsyncIterable(pMapIterable(makeSource(plans), createRandomControlMapper(plans), {concurrency}));
+				const message = `seed ${seed}, concurrency ${concurrency}`;
+				const check = errorIndex === -1
+					? promise
+					: t.throwsAsync(promise, {is: plans[errorIndex].reason}, message);
+
+				// eslint-disable-next-line no-await-in-loop
+				await check;
+			}
+		}
+	}
+});
+
+// Collect the yielded values, and the error that ends the stream, if any.
+async function collectUntilError(asyncIterable) {
+	const values = [];
+
+	try {
+		for await (const value of asyncIterable) {
+			values.push(value);
+		}
+	} catch (error) {
+		return {values, error};
+	}
+
+	return {values};
+}
+
+// `backpressure` only bounds how far ahead `input` is read, so it never changes the yielded values,
+// the error that ends the stream, or the values yielded before it, on random plans with skips,
+// stops, and errors over a source whose `next()` calls settle out of call order.
+test('pMapIterable - `backpressure` does not change the results or the error on random plans', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomControlPlans(seed);
+		const stopIndex = plans.findIndex(plan => plan.kind === 'mapperStops');
+
+		// The errors below the stop are throwable; the first one in input order ends the ordered stream.
+		let errorIndex = -1;
+		for (const [index, plan] of plans.entries()) {
+			if (stopIndex !== -1 && index >= stopIndex) {
+				break;
+			}
+
+			if (plan.kind === 'rejectedElement' || plan.kind === 'mapperThrows') {
+				errorIndex = index;
+				break;
+			}
+		}
+
+		const valuesBeforeError = [];
+		let endIndex = plans.length;
+
+		if (stopIndex !== -1) {
+			endIndex = stopIndex;
+		}
+
+		if (errorIndex !== -1) {
+			endIndex = errorIndex;
+		}
+
+		for (const [index, plan] of plans.entries()) {
+			if (index >= endIndex) {
+				break;
+			}
+
+			if (plan.kind !== 'mapperSkips') {
+				valuesBeforeError.push(index * 2);
+			}
+		}
+
+		for (const concurrency of randomPlanConcurrencies) {
+			for (const backpressure of [concurrency, concurrency + 2, Number.POSITIVE_INFINITY]) {
+				const message = `seed ${seed}, concurrency ${concurrency}, backpressure ${backpressure}`;
+				// eslint-disable-next-line no-await-in-loop
+				const {values, error} = await collectUntilError(pMapIterable(randomPlansAsyncSource(plans), createRandomControlMapper(plans), {concurrency, backpressure}));
+
+				t.deepEqual(values, valuesBeforeError, message);
+				t.is(error, errorIndex === -1 ? undefined : plans[errorIndex].reason, message);
+			}
+		}
+	}
+});
+
+// A consumer that breaks at a random point must see only real results, each at most once, in both
+// orders, on random plans with skips and stops over a source whose `next()` calls settle out of
+// call order.
+test('pMapIterable - a consumer break yields no duplicate or foreign value on random plans', async t => {
+	const configurations = [];
+	for (const concurrency of randomPlanConcurrencies) {
+		for (const preserveOrder of [true, false]) {
+			for (const breakAt of [1, 2, 3]) {
+				configurations.push({concurrency, preserveOrder, breakAt});
+			}
+		}
+	}
+
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomControlPlans(seed).filter(plan => plan.kind !== 'rejectedElement' && plan.kind !== 'mapperThrows');
+		const possible = new Set();
+
+		for (const [index, plan] of plans.entries()) {
+			if (plan.kind !== 'mapperSkips' && plan.kind !== 'mapperStops') {
+				possible.add(index * 2);
+			}
+		}
+
+		for (const {concurrency, preserveOrder, breakAt} of configurations) {
+			const message = `seed ${seed}, concurrency ${concurrency}, preserveOrder ${preserveOrder}, breakAt ${breakAt}`;
+			const iterator = pMapIterable(randomPlansAsyncSource(plans), createRandomControlMapper(plans), {concurrency, preserveOrder})[Symbol.asyncIterator]();
+			const yielded = [];
+
+			for (let count = 0; count < breakAt; count++) {
+				// eslint-disable-next-line no-await-in-loop
+				const {done, value} = await iterator.next();
+				if (done) {
+					break;
+				}
+
+				yielded.push(value);
+			}
+
+			// eslint-disable-next-line no-await-in-loop
+			await iterator.return();
+
+			for (const value of yielded) {
+				t.true(possible.has(value), message);
+			}
+
+			t.is(new Set(yielded).size, yielded.length, message);
+		}
+	}
+});
+
+// A source that yields the plan elements and throws at the given pull position.
+function * throwingSource(plans, throwAt, error) {
+	for (const index of plans.keys()) {
+		if (index === throwAt) {
+			throw error;
+		}
+
+		yield createRandomPlanElement(plans, index);
+	}
+
+	if (throwAt === plans.length) {
+		throw error;
+	}
+}
+
+// At `concurrency: 1` the pulls are strictly in order, so the run reaches the source throw only when
+// it comes at or before a stop, and it rejects with the source error then. A stop first ends the
+// stream normally. The plans have no other error, so the source error is the only one that can
+// surface.
+test('pMap, pMapSettled, and pMapIterable reach a source error in pull order on random plans', async t => {
+	for (const seed of randomPlanSeeds) {
+		const plans = createRandomControlPlans(seed).filter(plan => plan.kind !== 'rejectedElement' && plan.kind !== 'mapperThrows');
+		const throwAt = createSeededRandom(seed)(plans.length + 1);
+		const stopIndex = plans.findIndex(plan => plan.kind === 'mapperStops');
+		const effectiveStop = stopIndex === -1 ? plans.length : stopIndex;
+		const reachesThrow = throwAt <= effectiveStop;
+		const sourceError = new Error(`source ${seed}`);
+		const expectedSettled = getRandomControlExpected(plans).expected;
+		const expectedValues = expectedSettled.filter(result => result.status === 'fulfilled').map(result => result.value);
+		const yieldedBeforeThrow = [];
+
+		for (const [index, plan] of plans.entries()) {
+			if (index >= (reachesThrow ? throwAt : effectiveStop)) {
+				break;
+			}
+
+			if (plan.kind !== 'mapperSkips') {
+				yieldedBeforeThrow.push(index * 2);
+			}
+		}
+
+		const message = `seed ${seed}, throwAt ${throwAt}`;
+
+		if (reachesThrow) {
+			// eslint-disable-next-line no-await-in-loop
+			await t.throwsAsync(pMapSettled(throwingSource(plans, throwAt, sourceError), createRandomControlMapper(plans), {concurrency: 1}), {is: sourceError}, message);
+			// eslint-disable-next-line no-await-in-loop
+			await t.throwsAsync(pMap(throwingSource(plans, throwAt, sourceError), createRandomControlMapper(plans), {concurrency: 1, stopOnError: false}), {is: sourceError}, message);
+			// eslint-disable-next-line no-await-in-loop
+			await t.throwsAsync(pMap(throwingSource(plans, throwAt, sourceError), createRandomControlMapper(plans), {concurrency: 1, stopOnError: true}), {is: sourceError}, message);
+		} else {
+			// eslint-disable-next-line no-await-in-loop
+			t.deepEqual(await pMapSettled(throwingSource(plans, throwAt, sourceError), createRandomControlMapper(plans), {concurrency: 1}), expectedSettled, message);
+			// eslint-disable-next-line no-await-in-loop
+			t.deepEqual(await pMap(throwingSource(plans, throwAt, sourceError), createRandomControlMapper(plans), {concurrency: 1, stopOnError: false}), expectedValues, message);
+		}
+
+		// eslint-disable-next-line no-await-in-loop
+		const {values, error} = await collectUntilError(pMapIterable(throwingSource(plans, throwAt, sourceError), createRandomControlMapper(plans), {concurrency: 1}));
+		t.deepEqual(values, yieldedBeforeThrow, message);
+		t.is(error, reachesThrow ? sourceError : undefined, message);
 	}
 });
 
