@@ -198,7 +198,7 @@ async function mapConcurrently(
 			}
 
 			// Intentionally detached
-			(async () => {
+			const runner = (async () => {
 				try {
 					const element = await nextItem.value;
 
@@ -252,6 +252,9 @@ async function mapConcurrently(
 					reject(error);
 				}
 			})();
+
+			// Link the runner to the returned promise, so the async stack trace of a mapper error reaches the caller. Nothing awaits the runner, so the trace would stop there, but V8 follows a reaction that resolves another promise. The link never settles, so it never resolves the returned promise. It is a new promise for each runner, as a shared one would keep a reaction for every element.
+			runner.then(() => new Promise(() => {})).then(resolve_);
 		};
 
 		// Create the concurrent runners in a detached (non-awaited)

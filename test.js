@@ -289,6 +289,107 @@ test('aggregate errors when stopOnError is false', async t => {
 	await t.throwsAsync(pMap(errorInput2, mapper, {concurrency: 1, stopOnError: false}), {instanceOf: AggregateError, message: ''});
 });
 
+test('mapper error stack trace includes the caller', async t => {
+	async function callPMap() {
+		await pMap([1, 2], async () => {
+			await delay(10);
+			throw new Error('foo');
+		}, {concurrency: 1});
+	}
+
+	const error = await t.throwsAsync(callPMap, {message: 'foo'});
+	t.regex(error.stack, /at async callPMap /);
+});
+
+test('mapper error stack trace includes the caller for an element mapped after the first ones', async t => {
+	// With `concurrency: 1`, the last element runs in a runner started by the runner before it.
+	async function callPMap() {
+		await pMap([1, 2, 3], async value => {
+			await delay(10);
+
+			if (value === 3) {
+				throw new Error('foo');
+			}
+		}, {concurrency: 1});
+	}
+
+	const error = await t.throwsAsync(callPMap, {message: 'foo'});
+	t.regex(error.stack, /at async callPMap /);
+});
+
+test('mapper error stack trace includes the caller when stopOnError is false', async t => {
+	async function callPMap() {
+		await pMap([1, 2], async () => {
+			await delay(10);
+			throw new Error('foo');
+		}, {concurrency: 1, stopOnError: false});
+	}
+
+	const error = await t.throwsAsync(callPMap, {instanceOf: AggregateError});
+	t.regex(error.stack, /at async callPMap /);
+	t.is(error.errors.length, 2);
+
+	for (const innerError of error.errors) {
+		t.regex(innerError.stack, /at async callPMap /);
+	}
+});
+
+test('mapper error stack trace includes the caller for an async iterable', async t => {
+	async function * source() {
+		yield 1;
+		yield 2;
+	}
+
+	async function callPMap() {
+		await pMap(source(), async () => {
+			await delay(10);
+			throw new Error('foo');
+		}, {concurrency: 2});
+	}
+
+	const error = await t.throwsAsync(callPMap, {message: 'foo'});
+	t.regex(error.stack, /at async callPMap /);
+});
+
+test('pMapSettled - rejection reason stack trace includes the caller', async t => {
+	async function callPMapSettled() {
+		const [result] = await pMapSettled([1], async () => {
+			await delay(10);
+			throw new Error('foo');
+		});
+
+		return result;
+	}
+
+	const result = await callPMapSettled();
+	t.is(result.status, 'rejected');
+	t.regex(result.reason.stack, /at async callPMapSettled /);
+});
+
+test('pMapKeyed - mapper error stack trace includes the caller', async t => {
+	async function callPMapKeyed() {
+		await pMapKeyed({a: 1}, async () => {
+			await delay(10);
+			throw new Error('foo');
+		});
+	}
+
+	const error = await t.throwsAsync(callPMapKeyed, {message: 'foo'});
+	t.regex(error.stack, /at async callPMapKeyed /);
+});
+
+test('pMapIterable - mapper error stack trace includes the consumer', async t => {
+	async function consume() {
+		await collectAsyncIterable(pMapIterable([1, 2], async () => {
+			await delay(10);
+			throw new Error('foo');
+		}, {concurrency: 1}));
+	}
+
+	const error = await t.throwsAsync(consume, {message: 'foo'});
+	t.regex(error.stack, /at async consume /);
+});
+
 // A source whose `next()` calls settle out of call order, unlike a generator, which queues
 // them. `for await` still sees every item in call order, so `pMap` must too.
 function outOfOrderSource(items, delays) {
