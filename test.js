@@ -5536,6 +5536,128 @@ test('pMap - maps an async source whose `next()` returns thenables that are not 
 	t.deepEqual(await pMap(source, value => value * 2, {concurrency: 2}), [0, 2, 4]);
 });
 
+// A thenable that does its work in `then`, so each subscription takes an item. `for await` subscribes once per pull. With `error`, the pull after the last item rejects with it instead of reporting `done`.
+const createColdThenableSource = ({error} = {}) => {
+	let value = 0;
+	let isDone = false;
+
+	const source = {
+		nextCalls: 0,
+		thenCalls: 0,
+		nextCallsAfterDone: 0,
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					source.nextCalls++;
+
+					if (isDone) {
+						source.nextCallsAfterDone++;
+					}
+
+					return {
+						then(resolve, reject) { // eslint-disable-line unicorn/no-thenable
+							source.thenCalls++;
+
+							if (value < 3) {
+								resolve({done: false, value: ++value});
+								return;
+							}
+
+							isDone = true;
+
+							if (error) {
+								reject(error);
+								return;
+							}
+
+							resolve({done: true, value: undefined});
+						},
+					};
+				},
+			};
+		},
+	};
+
+	return source;
+};
+
+test('subscribes once to a thenable from the source `next()`', async t => {
+	const identity = value => value;
+
+	t.deepEqual(await pMap(createColdThenableSource(), identity, {concurrency: 1}), [1, 2, 3]);
+	t.deepEqual(await pMapSettled(createColdThenableSource(), identity, {concurrency: 1}), [fulfilled(1), fulfilled(2), fulfilled(3)]);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(createColdThenableSource(), identity, {concurrency: 1})), [1, 2, 3]);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(createColdThenableSource(), identity, {concurrency: 1, preserveOrder: false})), [1, 2, 3]);
+});
+
+test('stops pulling once a thenable from the source `next()` reports `done`', async t => {
+	const identity = value => value;
+
+	const sources = [];
+	const createSource = () => {
+		const source = createColdThenableSource();
+		sources.push(source);
+		return source;
+	};
+
+	await pMap(createSource(), identity, {concurrency: 1});
+	await pMapSettled(createSource(), identity, {concurrency: 1});
+	await collectAsyncIterable(pMapIterable(createSource(), identity, {concurrency: 1}));
+	await collectAsyncIterable(pMapIterable(createSource(), identity, {concurrency: 1, preserveOrder: false}));
+
+	for (const source of sources) {
+		t.is(source.nextCalls, 4);
+		t.is(source.nextCallsAfterDone, 0);
+	}
+});
+
+// Overlapping pulls can still make a pull while the one that reports `done` is pending, so only the subscriptions are counted here.
+test('subscribes once to each thenable from the source `next()` when pulls overlap', async t => {
+	const slowIdentity = async value => {
+		await delay(10);
+		return value;
+	};
+
+	const sources = [];
+	const createSource = () => {
+		const source = createColdThenableSource();
+		sources.push(source);
+		return source;
+	};
+
+	t.deepEqual(await pMap(createSource(), slowIdentity, {concurrency: 3}), [1, 2, 3]);
+	t.deepEqual(await pMap(createSource(), slowIdentity, {concurrency: Number.POSITIVE_INFINITY}), [1, 2, 3]);
+	t.deepEqual(await collectAsyncIterable(pMapIterable(createSource(), slowIdentity, {concurrency: 3, backpressure: 6})), [1, 2, 3]);
+	const unordered = await collectAsyncIterable(pMapIterable(createSource(), slowIdentity, {concurrency: 3, backpressure: 6, preserveOrder: false}));
+	t.deepEqual(unordered.sort(), [1, 2, 3]);
+
+	for (const source of sources) {
+		t.is(source.thenCalls, source.nextCalls);
+	}
+});
+
+test('rejects with the error of a thenable from the source `next()` that rejects', async t => {
+	const error = new Error('source boom');
+	const identity = value => value;
+
+	const sources = [];
+	const createSource = () => {
+		const source = createColdThenableSource({error});
+		sources.push(source);
+		return source;
+	};
+
+	await t.throwsAsync(pMap(createSource(), identity, {concurrency: 1}), {is: error});
+	await t.throwsAsync(pMap(createSource(), identity, {concurrency: 2, stopOnError: false}), {is: error});
+	await t.throwsAsync(pMapSettled(createSource(), identity, {concurrency: 1}), {is: error});
+	await t.throwsAsync(collectAsyncIterable(pMapIterable(createSource(), identity, {concurrency: 1})), {is: error});
+	await t.throwsAsync(collectAsyncIterable(pMapIterable(createSource(), identity, {concurrency: 1, preserveOrder: false})), {is: error});
+
+	for (const source of sources) {
+		t.is(source.thenCalls, source.nextCalls);
+	}
+});
+
 test('pMap - rejects instead of hanging when the source `next()` returns something that is not an object', async t => {
 	for (const result of [undefined, null]) {
 		const source = {

@@ -653,9 +653,11 @@ function createPuller(iterator) {
 		// branch of its own, which leaves the caller awaiting the pull itself rather than a promise
 		// derived from it, so an async source does not pay an extra microtask per element. The
 		// rejection is handled here as well as by the caller, so a pull cannot escape as an
-		// unhandled rejection.
-		result.then(markDone, () => {});
+		// unhandled rejection. A thenable that is not a promise is turned into one first, so it is
+		// subscribed to once, like `for await` does, while a native promise is returned as is.
+		const promise = Promise.resolve(result);
+		promise.then(markDone, () => {});
 
-		return result;
+		return promise;
 	};
 }
